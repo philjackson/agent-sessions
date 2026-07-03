@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/charmbracelet/lipgloss"
@@ -38,6 +39,15 @@ reverse = true
 
 [styles.selected]  # the cursor row
 reverse = true
+
+[commands]
+# Shell command run when pressing Enter on a session. {id}, {pid}, {cwd},
+# {file} and {pane} expand to shell-quoted values; {pane} is the tmux pane
+# hosting the session's claude process, and commands that use it are only
+# run for sessions found in a pane. The default jumps to that pane:
+# switch-client moves the client when run inside tmux, attach-session
+# takes over the terminal when run outside it.
+enter = "tmux select-pane -t {pane} && tmux select-window -t {pane} && tmux switch-client -t {pane} 2>/dev/null || tmux attach-session -t {pane}"
 `
 
 // Config is the user-tunable configuration.
@@ -50,6 +60,9 @@ type Config struct {
 		Bar      StyleConfig `toml:"bar"`
 		Selected StyleConfig `toml:"selected"`
 	} `toml:"styles"`
+	Commands struct {
+		Enter string `toml:"enter"`
+	} `toml:"commands"`
 }
 
 // StyleConfig describes one visual element of the UI.
@@ -70,6 +83,20 @@ func (sc StyleConfig) style() lipgloss.Style {
 		st = st.Background(lipgloss.Color(sc.Bg))
 	}
 	return st.Bold(sc.Bold).Faint(sc.Faint).Reverse(sc.Reverse)
+}
+
+// expandCommand substitutes {key} placeholders in a command template with
+// shell-quoted values.
+func expandCommand(tmpl string, vars map[string]string) string {
+	pairs := make([]string, 0, len(vars)*2)
+	for k, v := range vars {
+		pairs = append(pairs, "{"+k+"}", shellQuote(v))
+	}
+	return strings.NewReplacer(pairs...).Replace(tmpl)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // configPath returns the XDG-style location of the config file.

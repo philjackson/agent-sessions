@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ func newStyles(cfg Config) styles {
 type model struct {
 	loader   *loader
 	styles   styles
+	enterCmd string // command template bound to Enter
 	sessions []Session
 	cursor   int
 	offset   int
@@ -66,7 +68,12 @@ type model struct {
 }
 
 func newModel(cfg Config) model {
-	return model{loader: newLoader(), styles: newStyles(cfg), loading: true}
+	return model{
+		loader:   newLoader(),
+		styles:   newStyles(cfg),
+		enterCmd: cfg.Commands.Enter,
+		loading:  true,
+	}
 }
 
 type sessionsLoadedMsg struct {
@@ -75,6 +82,8 @@ type sessionsLoadedMsg struct {
 }
 
 type tickMsg struct{}
+
+type execDoneMsg struct{ err error }
 
 func (m model) loadCmd() tea.Msg {
 	sessions, err := m.loader.Load()
@@ -129,6 +138,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		return m, tea.Batch(m.loadCmd, tickCmd())
 
+	case execDoneMsg:
+		if msg.err != nil {
+			m.notice = "enter command: " + msg.err.Error()
+		}
+		if m.loading {
+			return m, nil
+		}
+		m.loading = true
+		return m, m.loadCmd
+
 	case tea.KeyMsg:
 		m.notice = ""
 		switch msg.String() {
@@ -161,34 +180,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// gotoSession jumps to the tmux pane of the selected live session: switching
-// the current client when inside tmux, attaching to it when outside.
+// gotoSession runs the configured enter command for the selected session,
+// handing it the terminal so interactive commands (tmux attach, editors)
+// work. Commands using {pane} or {pid} need a live session; {pane} also
+// needs the session's claude process to sit inside a tmux pane.
 func (m model) gotoSession() (tea.Model, tea.Cmd) {
 	if m.cursor >= len(m.sessions) {
 		return m, nil
 	}
 	s := m.sessions[m.cursor]
-	if !s.Live() {
-		m.notice = "Session has no running claude process."
+	tmpl := m.enterCmd
+	if tmpl == "" {
+		m.notice = "No [commands] enter configured."
 		return m, nil
 	}
-	pane, ok := tmuxPaneFor(s.PID)
-	if !ok {
-		m.notice = "Session is not running in a tmux pane."
-		return m, nil
+	vars := map[string]string{
+		"id":   s.ID,
+		"pid":  strconv.Itoa(s.PID),
+		"cwd":  s.CWD,
+		"file": s.File,
 	}
-	if insideTmux() {
-		if err := tmuxSwitchTo(pane); err != nil {
-			m.notice = "tmux: " + err.Error()
+	if strings.Contains(tmpl, "{pane}") || strings.Contains(tmpl, "{pid}") {
+		if !s.Live() {
+			m.notice = "Session has no running claude process."
+			return m, nil
 		}
-		return m, nil
 	}
-	if err := tmuxSelect(pane); err != nil {
-		m.notice = "tmux: " + err.Error()
-		return m, nil
+	if strings.Contains(tmpl, "{pane}") {
+		pane, ok := tmuxPaneFor(s.PID)
+		if !ok {
+			m.notice = "Session is not running in a tmux pane."
+			return m, nil
+		}
+		vars["pane"] = pane
 	}
-	return m, tea.ExecProcess(exec.Command("tmux", "attach-session", "-t", pane),
-		func(error) tea.Msg { return m.loadCmd() })
+	cmd := exec.Command("sh", "-c", expandCommand(tmpl, vars))
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
 // lastRow is the highest valid cursor position.
