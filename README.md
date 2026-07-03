@@ -127,10 +127,23 @@ c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'
 ```
 
 Use `split-window` instead of `new-window` for a pane in the current
-window. One quoting subtlety: the expanded `{text-input:...}` value is
-single-quote escaped, so the `"claude ..."` double-quote wrapper carries it
-as a single argument through tmux's shell — a prompt containing a literal
-`"` is the one thing it can't carry.
+window.
+
+That form runs claude via a non-interactive shell, though — rc files are
+not sourced, so version managers (asdf) and per-directory environments
+(direnv) won't apply. If you use those, open the window with no command
+(it starts your normal interactive shell) and type the claude invocation
+into it with `send-keys`:
+
+```toml
+[commands]
+c = 'p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker}) && tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter'
+```
+
+Quoting subtlety, for both forms: the expanded `{text-input:...}` value is
+single-quote escaped, and the double-quote wrapper hands it intact to the
+window's shell — a prompt containing a literal `"` is the one thing it
+can't carry.
 
 ## Tip: a tmux key that jumps to agent-sessions
 
