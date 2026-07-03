@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -46,9 +47,11 @@ reverse = true
 # like "ctrl+x" and "f5" (quote names with + or . in them). {id}, {pid},
 # {cwd}, {file} and {pane} expand to shell-quoted values; {pane} is the
 # tmux pane hosting the session's claude process, and commands using it
-# are only run for sessions found in a pane. {project-picker} first opens
+# are only run for sessions found in a pane. Two placeholders are
+# interactive and resolve before the command runs: {project-picker} opens
 # a selection screen over every known project and expands to the chosen
-# project's path. Bindings here take precedence over the built-in keys;
+# project's path, and {text-input} (or {text-input:Some label}) asks for
+# a line of text. Bindings here take precedence over the built-in keys;
 # set one to "" to unbind it.
 #
 # The default enter jumps to the session's pane: switch-client moves the
@@ -57,6 +60,7 @@ reverse = true
 #   o = "cd {cwd} && $EDITOR ."
 #   t = "less +G {file}"
 #   n = "cd {project-picker} && claude"
+#   c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'
 enter = "tmux select-pane -t {pane} && tmux select-window -t {pane} && tmux switch-client -t {pane} 2>/dev/null || tmux attach-session -t {pane}"
 `
 
@@ -92,6 +96,10 @@ func (sc StyleConfig) style() lipgloss.Style {
 	}
 	return st.Bold(sc.Bold).Faint(sc.Faint).Reverse(sc.Reverse)
 }
+
+// textInputRe matches {text-input} placeholders, with an optional prompt
+// label after a colon: {text-input:Initial prompt}.
+var textInputRe = regexp.MustCompile(`\{text-input(?::([^}]*))?\}`)
 
 // expandCommand substitutes {key} placeholders in a command template with
 // shell-quoted values.

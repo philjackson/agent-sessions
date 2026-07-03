@@ -74,15 +74,35 @@ fg = "#af87ff"
 
 `[commands]` binds keys to shell commands run on the selected session. Any
 Bubble Tea key name works — single characters, `enter`, or combos like
-`"ctrl+x"` (quoted). `{id}`, `{pid}`, `{cwd}`, `{file}` and `{pane}` expand
-to shell-quoted values ({pane} being the tmux pane hosting the session's
-claude process), and the command gets the terminal while it runs, so
+`"ctrl+x"` (quoted). The command gets the terminal while it runs, so
 interactive commands work. Bindings take precedence over built-in keys;
 set one to `""` to unbind it. `?` shows the active bindings.
 
-`{project-picker}` is special: it first opens a selection screen listing
+### Command placeholders
+
+Every placeholder expands to a shell-quoted value, so paths and typed text
+survive word-splitting.
+
+| Placeholder | Expands to |
+| --- | --- |
+| `{id}` | the session id (as used by `claude --resume`) |
+| `{cwd}` | the session's working directory |
+| `{file}` | the path of the session's transcript (`.jsonl`) |
+| `{pid}` | the pid of the session's running `claude` process |
+| `{pane}` | the tmux pane hosting the session's `claude` process |
+| `{project-picker}` | interactive: the project chosen from a selection screen |
+| `{text-input}` | interactive: a line of text typed into the status bar |
+
+`{pid}` and `{pane}` only apply to live sessions, and `{pane}` further
+requires the process to sit inside a tmux pane — commands using them show a
+status-bar notice instead of running when that doesn't hold.
+
+The two interactive placeholders resolve one after another before the
+command runs, and compose freely with the rest. `{project-picker}` lists
 every known project (the distinct working directories across all sessions,
-most recently used first) and expands to the chosen project's path.
+most recently used first). `{text-input}` accepts an optional label after a
+colon that names the prompt: `{text-input:Prompt}`. `Esc` at any step
+cancels the whole command.
 
 ```toml
 [commands]
@@ -91,6 +111,22 @@ o = "cd {cwd} && $EDITOR ."
 t = "less +G {file}"
 n = "cd {project-picker} && claude"
 ```
+
+## Tip: create a new Claude session from the TUI
+
+Bind a key that picks a project, asks for the opening prompt, and starts
+`claude` with it in a fresh tmux window:
+
+```toml
+[commands]
+c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'
+```
+
+Use `split-window` instead of `new-window` for a pane in the current
+window. One quoting subtlety: the expanded `{text-input:...}` value is
+single-quote escaped, so the `"claude ..."` double-quote wrapper carries it
+as a single argument through tmux's shell — a prompt containing a literal
+`"` is the one thing it can't carry.
 
 ## Tip: a tmux key that jumps to agent-sessions
 

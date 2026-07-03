@@ -65,6 +65,7 @@ type model struct {
 	showHelp  bool
 	deleting  *Session // awaiting y/n confirmation to delete
 	picker    pickerState
+	prompt    promptState
 	cursor    int
 	offset    int
 	width     int
@@ -91,6 +92,17 @@ type pickerState struct {
 	cursor int
 	offset int
 	tmpl   string            // the command awaiting the pick
+	vars   map[string]string // expansion vars captured at keypress
+}
+
+// promptState is the one-line text prompt shown while a command containing
+// {text-input} waits for its text.
+type promptState struct {
+	active bool
+	label  string
+	token  string // the exact {text-input...} placeholder being filled
+	input  string
+	tmpl   string            // the command awaiting the text
 	vars   map[string]string // expansion vars captured at keypress
 }
 
@@ -171,6 +183,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.picker.active {
 			return m.handlePickerKey(msg)
+		}
+		if m.prompt.active {
+			return m.handlePromptKey(msg)
 		}
 		if m.searching {
 			m.handleSearchKey(msg)
@@ -258,8 +273,23 @@ func (m model) runCommand(tmpl string) (tea.Model, tea.Cmd) {
 		}
 		vars["pane"] = pane
 	}
-	if strings.Contains(tmpl, "{project-picker}") {
+	return m.continueCommand(tmpl, vars)
+}
+
+// continueCommand resolves the next interactive placeholder in a command
+// template — opening the project picker or the text prompt — and executes
+// the command once none remain.
+func (m model) continueCommand(tmpl string, vars map[string]string) (tea.Model, tea.Cmd) {
+	if strings.Contains(tmpl, "{project-picker}") && vars["project-picker"] == "" {
 		m.picker = pickerState{active: true, items: m.projectList(), tmpl: tmpl, vars: vars}
+		return m, nil
+	}
+	if match := textInputRe.FindStringSubmatch(tmpl); match != nil {
+		label := match[1]
+		if label == "" {
+			label = "Input"
+		}
+		m.prompt = promptState{active: true, label: label, token: match[0], tmpl: tmpl, vars: vars}
 		return m, nil
 	}
 	return m, execCmd(tmpl, vars)
@@ -298,7 +328,7 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.vars["project-picker"] = p.items[p.cursor]
 		tmpl, vars := p.tmpl, p.vars
 		m.picker = pickerState{}
-		return m, execCmd(tmpl, vars)
+		return m.continueCommand(tmpl, vars)
 	case "j", "down":
 		p.cursor = min(p.cursor+1, max(0, len(p.items)-1))
 	case "k", "up":
@@ -313,6 +343,30 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if p.cursor >= p.offset+m.pageSize() {
 		p.offset = p.cursor - m.pageSize() + 1
+	}
+	return m, nil
+}
+
+// handlePromptKey edits the pending {text-input} value. Enter substitutes
+// it (shell-quoted) and continues resolving the command; Esc cancels.
+func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := &m.prompt
+	switch msg.String() {
+	case "enter":
+		tmpl := strings.ReplaceAll(p.tmpl, p.token, shellQuote(p.input))
+		vars := p.vars
+		m.prompt = promptState{}
+		return m.continueCommand(tmpl, vars)
+	case "esc":
+		m.prompt = promptState{}
+	case "backspace":
+		if r := []rune(p.input); len(r) > 0 {
+			p.input = string(r[:len(r)-1])
+		}
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			p.input += string(msg.Runes)
+		}
 	}
 	return m, nil
 }
@@ -445,6 +499,9 @@ func (m model) View() string {
 	}
 	if m.searching {
 		status = "Search: " + m.query + "█"
+	}
+	if m.prompt.active {
+		status = m.prompt.label + ": " + m.prompt.input + "█"
 	}
 	if m.deleting != nil {
 		status = fmt.Sprintf("Delete %q? (y/n)", m.deleting.Subject())
