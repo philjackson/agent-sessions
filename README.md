@@ -74,3 +74,33 @@ the terminal while it runs, so interactive commands work:
 [commands]
 enter = "cd {cwd} && claude --resume {id}"
 ```
+
+## Tip: a tmux key that jumps to agent-sessions
+
+To hop to the TUI from anywhere in tmux (starting it if it isn't running),
+save this as an executable script, e.g. `~/.local/bin/agent-sessions-focus`:
+
+```sh
+#!/bin/sh
+# Jump to the pane running agent-sessions, starting it if absent.
+pane=$(tmux list-panes -a -F '#{pane_id} #{pane_current_command}' \
+    | awk '$2 == "agent-sessions" {print $1; exit}')
+if [ -n "$pane" ]; then
+    tmux select-window -t "$pane"
+    tmux select-pane -t "$pane"
+    tmux switch-client -t "$pane"
+else
+    tmux new-window -n sessions agent-sessions
+fi
+```
+
+and bind it in `~/.tmux.conf` (`prefix S`, or use `bind-key -n M-s` for a
+prefix-less key):
+
+```tmux
+bind-key S run-shell ~/.local/bin/agent-sessions-focus
+```
+
+If two copies of the TUI are running, the script picks the first pane it
+finds, and the match is on the binary name — adjust the awk pattern if you
+install it under a different name.
