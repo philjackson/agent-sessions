@@ -32,7 +32,7 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | Key | Action |
 | --- | --- |
 | `j` / `k`, arrows | move down / up |
-| `Enter` | switch to the session's tmux pane |
+| `Enter` | jump to a live session's tmux pane; resume a dead session |
 | `/` | search: filter the list as you type, across all projects |
 | `f` | filter the list to one project, chosen via the project picker |
 | `Esc` | clear the search and project filters |
@@ -53,11 +53,11 @@ branch, and session id. `f` filters the list to a single project via the
 project picker. Both filters are shown in the status bar, combine with each
 other, and stay until `Esc` clears them.
 
-`Enter` runs a configurable shell command (see below). The default finds the
-tmux pane whose process tree contains the session's `claude` process and
-jumps there: inside tmux it switches the current client, outside tmux it
-attaches. Sessions the command's placeholders can't apply to (no live
-process, not under tmux) get a status-bar notice instead.
+`Enter` runs a configurable shell command (see below). For a live session
+the default finds the tmux pane whose process tree contains the session's
+`claude` process and jumps there: inside tmux it switches the current
+client, outside tmux it attaches. For a dead session it resumes the
+conversation with `claude --resume` in a fresh tmux window.
 
 ## Configuration
 
@@ -92,6 +92,7 @@ survive word-splitting.
 | `{id}` | the session id (as used by `claude --resume`) |
 | `{cwd}` | the session's working directory |
 | `{file}` | the path of the session's transcript (`.jsonl`) |
+| `{state}` | `running`/`waiting`/`idle` for live sessions, empty otherwise |
 | `{pid}` | the pid of the session's running `claude` process |
 | `{pane}` | the tmux pane hosting the session's `claude` process |
 | `{project-picker}` | interactive: the project chosen from a selection screen |
@@ -99,7 +100,25 @@ survive word-splitting.
 
 `{pid}` and `{pane}` only apply to live sessions, and `{pane}` further
 requires the process to sit inside a tmux pane — commands using them show a
-status-bar notice instead of running when that doesn't hold.
+status-bar notice instead of running when that doesn't hold. Appending `?`
+makes them **optional**: `{pane?}` and `{pid?}` expand to an empty string
+instead, so a single command can branch. That's how the default `enter`
+jumps to a live session's pane but resumes a dead one:
+
+```toml
+enter = '''
+if [ -n {pane?} ]; then
+    tmux select-pane -t {pane?} && tmux select-window -t {pane?}
+    tmux switch-client -t {pane?} 2>/dev/null || tmux attach-session -t {pane?}
+else
+    p=$(tmux new-window -P -F "#{pane_id}" -c {cwd})
+    tmux send-keys -t "$p" "claude --resume {id}" Enter
+fi
+'''
+```
+
+For anything more elaborate, hand the facts to a script and decide there:
+`enter = "open-session {state} {pane?} {cwd} {id}"`.
 
 The two interactive placeholders resolve one after another before the
 command runs, and compose freely with the rest. `{project-picker}` lists
@@ -139,6 +158,9 @@ into it with `send-keys`:
 [commands]
 c = 'p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker}) && tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter'
 ```
+
+The shipped default `enter` uses the same pattern for its dead-session
+branch, so resumed sessions get the project's full environment too.
 
 Quoting subtlety, for both forms: the expanded `{text-input:...}` value is
 single-quote escaped, and the double-quote wrapper hands it intact to the

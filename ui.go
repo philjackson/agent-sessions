@@ -139,7 +139,7 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.loadCmd, tickCmd())
+	return tea.Batch(m.loadCmd, tickCmd(), tea.SetWindowTitle("agent-sessions"))
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -262,20 +262,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// runCommand runs a configured command template for the selected session,
-// handing it the terminal so interactive commands (tmux attach, editors)
-// work. Commands using {pane} or {pid} need a live session; {pane} also
-// needs the session's claude process to sit inside a tmux pane.
+// runCommand runs a command template for the selected session, handing it
+// the terminal so interactive commands (tmux attach, editors) work.
+// Templates using {pane} or {pid} need a live session ({pane} additionally
+// a tmux pane hosting it) and show a notice otherwise; the optional forms
+// {pane?} and {pid?} expand to "" instead, so one command can branch.
 func (m model) runCommand(tmpl string) (tea.Model, tea.Cmd) {
 	if m.cursor >= len(m.sessions) {
 		return m, nil
 	}
 	s := m.sessions[m.cursor]
 	vars := map[string]string{
-		"id":   s.ID,
-		"pid":  strconv.Itoa(s.PID),
-		"cwd":  s.CWD,
-		"file": s.File,
+		"id":    s.ID,
+		"pid":   strconv.Itoa(s.PID),
+		"pid?":  "",
+		"pane?": "",
+		"cwd":   s.CWD,
+		"file":  s.File,
+		"state": string(s.State),
+	}
+	if s.Live() {
+		vars["pid?"] = strconv.Itoa(s.PID)
 	}
 	if strings.Contains(tmpl, "{pane}") || strings.Contains(tmpl, "{pid}") {
 		if !s.Live() {
@@ -283,13 +290,14 @@ func (m model) runCommand(tmpl string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if strings.Contains(tmpl, "{pane}") {
+	if strings.Contains(tmpl, "{pane}") || strings.Contains(tmpl, "{pane?}") {
 		pane, ok := tmuxPaneFor(s.PID)
-		if !ok {
+		if ok {
+			vars["pane"], vars["pane?"] = pane, pane
+		} else if strings.Contains(tmpl, "{pane}") {
 			m.notice = "Session is not running in a tmux pane."
 			return m, nil
 		}
-		vars["pane"] = pane
 	}
 	return m.continueCommand(tmpl, vars)
 }
@@ -599,7 +607,8 @@ func (m model) helpView() string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		lines = append(lines, fmt.Sprintf("    %-18s %s", k, m.commands[k]))
+		oneLine := strings.Join(strings.Fields(m.commands[k]), " ")
+		lines = append(lines, fmt.Sprintf("    %-18s %s", k, oneLine))
 	}
 
 	var b strings.Builder
