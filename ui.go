@@ -13,6 +13,9 @@ import (
 
 const refreshEvery = 2 * time.Second
 
+// Sessions with no live process and no activity for this long are dimmed.
+const dimAfter = 24 * time.Hour
+
 // Index column widths; the subject column takes the remaining width.
 const (
 	colProject = 28
@@ -28,17 +31,30 @@ var colState = func() int {
 	return w
 }()
 
-var (
-	reverseStyle = lipgloss.NewStyle().Reverse(true)
-	stateStyles  = map[SessionState]lipgloss.Style{
-		StateRunning: lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
-		StateWaiting: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")),
-		StateIdle:    lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
+// styles are the configured looks of each UI element.
+type styles struct {
+	bar      lipgloss.Style
+	selected lipgloss.Style
+	dim      lipgloss.Style
+	state    map[SessionState]lipgloss.Style
+}
+
+func newStyles(cfg Config) styles {
+	return styles{
+		bar:      cfg.Styles.Bar.style(),
+		selected: cfg.Styles.Selected.style(),
+		dim:      cfg.Styles.Dimmed.style(),
+		state: map[SessionState]lipgloss.Style{
+			StateRunning: cfg.Styles.Running.style(),
+			StateWaiting: cfg.Styles.Waiting.style(),
+			StateIdle:    cfg.Styles.Idle.style(),
+		},
 	}
-)
+}
 
 type model struct {
 	loader   *loader
+	styles   styles
 	sessions []Session
 	cursor   int
 	offset   int
@@ -49,8 +65,8 @@ type model struct {
 	notice   string // shown instead of status until the next keypress
 }
 
-func newModel() model {
-	return model{loader: newLoader(), loading: true}
+func newModel(cfg Config) model {
+	return model{loader: newLoader(), styles: newStyles(cfg), loading: true}
 }
 
 type sessionsLoadedMsg struct {
@@ -200,18 +216,24 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(reverseStyle.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  g/G:Top/Bottom  r:Refresh", m.width)))
+	b.WriteString(m.styles.bar.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  g/G:Top/Bottom  r:Refresh", m.width)))
 	b.WriteString("\n")
 
 	page := m.pageSize()
 	for i := 0; i < page; i++ {
 		idx := m.offset + i
 		if idx < len(m.sessions) {
+			s := m.sessions[idx]
 			line := m.renderRow(idx)
-			if idx == m.cursor {
-				line = reverseStyle.Render(pad(line, m.width))
-			} else if style, ok := stateStyles[m.sessions[idx].State]; ok {
-				line = style.Render(line)
+			switch {
+			case idx == m.cursor:
+				line = m.styles.selected.Render(pad(line, m.width))
+			case s.Live():
+				if style, ok := m.styles.state[s.State]; ok {
+					line = style.Render(line)
+				}
+			case time.Since(s.Modified) > dimAfter:
+				line = m.styles.dim.Render(line)
 			}
 			b.WriteString(line)
 		}
@@ -226,7 +248,7 @@ func (m model) View() string {
 	if m.notice != "" {
 		status = m.notice
 	}
-	b.WriteString(reverseStyle.Render(pad(status, m.width)))
+	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
 	return b.String()
 }
 

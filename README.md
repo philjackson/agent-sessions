@@ -40,3 +40,17 @@ checking the pid's start time in `/proc`.
 `claude` process. Inside tmux it switches the current client there; outside
 tmux it attaches to that session. Sessions not running under tmux get a
 status-bar notice instead.
+
+## Configuration
+
+Colours live in `$XDG_CONFIG_HOME/agent-sessions/config.toml` (usually
+`~/.config/agent-sessions/config.toml`); a commented default file is written
+on first run. Each UI element — `running`, `waiting`, `idle`, `dimmed`,
+`bar`, `selected` — is a `[styles.*]` section accepting `fg`/`bg` (ANSI/256
+number or `#rrggbb` hex) and `bold`/`faint`/`reverse` booleans. Omitted keys
+keep their defaults, so a config can override just one colour:
+
+```toml
+[styles.running]
+fg = "#af87ff"
+```
