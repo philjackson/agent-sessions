@@ -61,8 +61,9 @@ type model struct {
 	all       []Session         // every session, unfiltered
 	sessions  []Session         // what the index shows: all, limited by query
 	query     string
-	searching bool // the search prompt is open and capturing keys
+	searching bool     // the search prompt is open and capturing keys
 	showHelp  bool
+	deleting  *Session // awaiting y/n confirmation to delete
 	picker    pickerState
 	cursor    int
 	offset    int
@@ -148,6 +149,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.notice = ""
+		if m.deleting != nil {
+			s := *m.deleting
+			m.deleting = nil
+			if msg.String() == "y" {
+				if err := s.Delete(); err != nil {
+					m.notice = "delete: " + err.Error()
+					return m, nil
+				}
+				m.notice = fmt.Sprintf("Deleted %q.", s.Subject())
+				if !m.loading {
+					m.loading = true
+					return m, m.loadCmd
+				}
+			}
+			return m, nil
+		}
 		if m.showHelp {
 			m.showHelp = false
 			return m, nil
@@ -168,6 +185,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.showHelp = true
+		case "d":
+			if m.cursor >= len(m.sessions) {
+				break
+			}
+			s := m.sessions[m.cursor]
+			if s.Live() {
+				m.notice = "Won't delete a session with a running claude process."
+				break
+			}
+			m.deleting = &s
 		case "/":
 			m.searching = true
 			m.query = ""
@@ -419,6 +446,9 @@ func (m model) View() string {
 	if m.searching {
 		status = "Search: " + m.query + "█"
 	}
+	if m.deleting != nil {
+		status = fmt.Sprintf("Delete %q? (y/n)", m.deleting.Subject())
+	}
 	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
 	return b.String()
 }
@@ -454,6 +484,7 @@ func (m model) helpView() string {
 		"    ctrl+d / ctrl+u    half page down / up",
 		"    g / G              first / last session",
 		"    /                  search; Enter keeps the limit, Esc clears it",
+		"    d                  delete session (transcript + sidecar files; asks y/n)",
 		"    r                  refresh now",
 		"    ?                  this help",
 		"    q                  quit",

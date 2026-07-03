@@ -69,6 +69,15 @@ func displayPath(path string) string {
 	return path
 }
 
+// Delete removes the session's transcript and its sidecar directory
+// (subagent transcripts, tool results).
+func (s Session) Delete() error {
+	if err := os.Remove(s.File); err != nil {
+		return err
+	}
+	return os.RemoveAll(strings.TrimSuffix(s.File, ".jsonl"))
+}
+
 // matches reports whether the lowercase query appears in any of the
 // session's searchable fields.
 func (s Session) matches(q string) bool {

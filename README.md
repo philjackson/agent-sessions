@@ -37,9 +37,15 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | `Esc` | clear the search limit |
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
+| `d` | delete the session after a y/n confirmation |
 | `r` | refresh |
 | `?` | help: list all keys and configured commands |
 | `q` | quit |
+
+`d` removes the session's transcript and sidecar directory from
+`~/.claude/projects`, which only means `claude --resume` can no longer
+offer that session — nothing a running Claude Code depends on. Sessions
+with a live claude process are refused.
 
 `/` matches case-insensitively against each session's title, project path,
 branch, and session id. `Enter` keeps the match as a limit (shown in the
