@@ -1,42 +1,30 @@
 package main
 
-import (
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-)
+import "github.com/shirou/gopsutil/v4/process"
 
-// procStatFields returns the fields of /proc/<pid>/stat that follow the
-// parenthesized comm (which may contain spaces), or nil if pid is gone.
-func procStatFields(pid int) []string {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+// procStartTime returns the process start time in milliseconds since the
+// epoch, or 0 if the process doesn't exist.
+func procStartTime(pid int) int64 {
+	p, err := process.NewProcess(int32(pid))
 	if err != nil {
-		return nil
+		return 0
 	}
-	i := strings.LastIndexByte(string(data), ')')
-	if i < 0 {
-		return nil
+	t, err := p.CreateTime()
+	if err != nil {
+		return 0
 	}
-	return strings.Fields(string(data[i+1:]))
-}
-
-// procStartTime returns stat field 22 (process start time in clock ticks),
-// or "" if the process doesn't exist.
-func procStartTime(pid int) string {
-	fields := procStatFields(pid)
-	if len(fields) < 20 {
-		return ""
-	}
-	return fields[19] // fields[0] is stat field 3 (state)
+	return t
 }
 
 // parentPID returns pid's parent, or 0 if unknown.
 func parentPID(pid int) int {
-	fields := procStatFields(pid)
-	if len(fields) < 2 {
+	p, err := process.NewProcess(int32(pid))
+	if err != nil {
 		return 0
 	}
-	n, _ := strconv.Atoi(fields[1]) // stat field 4: ppid
-	return n
+	ppid, err := p.Ppid()
+	if err != nil {
+		return 0
+	}
+	return int(ppid)
 }

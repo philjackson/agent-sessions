@@ -271,9 +271,15 @@ func userPrompt(l transcriptLine) string {
 type registrySession struct {
 	PID       int    `json:"pid"`
 	SessionID string `json:"sessionId"`
-	ProcStart string `json:"procStart"`
+	StartedAt int64  `json:"startedAt"` // milliseconds since the epoch
 	Status    string `json:"status"`
 }
+
+// procStartTolerance is how far a process's start time may sit from the
+// registry's startedAt stamp and still count as the same process. The CLI
+// records startedAt a second or two into its boot; anything further off
+// means the pid was recycled by an unrelated process.
+const procStartTolerance = 15 * time.Second
 
 // liveInfo is what the registry tells us about one running session.
 type liveInfo struct {
@@ -314,7 +320,9 @@ func liveStates() map[string]liveInfo {
 		if err := json.Unmarshal(data, &r); err != nil || r.SessionID == "" {
 			continue
 		}
-		if r.ProcStart != procStartTime(r.PID) {
+		start := procStartTime(r.PID)
+		delta := time.Duration(r.StartedAt-start) * time.Millisecond
+		if start == 0 || delta.Abs() > procStartTolerance {
 			continue // stale file: pid dead or recycled
 		}
 		state, ok := registryStates[r.Status]

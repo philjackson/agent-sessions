@@ -23,7 +23,9 @@ Sessions with a running `claude` process show a state:
 State comes from `~/.claude/sessions/<pid>.json`, a registry each running
 Claude Code instance maintains (status `busy`/`waiting`/`idle` plus the exact
 session id). Registry files left behind by crashed processes are ignored by
-checking the pid's start time in `/proc`.
+checking that the pid is alive and started around the registry's `startedAt`
+stamp; process inspection goes through gopsutil, so it works on both Linux
+and macOS (the macOS path hasn't been smoke-tested yet).
 
 ## Keys
 
