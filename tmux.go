@@ -6,28 +6,47 @@ import (
 	"strings"
 )
 
-// tmuxPaneFor returns the id of the tmux pane that pid runs in, found by
-// walking pid's ancestor chain until it hits a pane's root process.
-func tmuxPaneFor(pid int) (string, bool) {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}").Output()
+// paneInfo describes one tmux pane: its target id (%N) and its
+// human-readable session:window.pane name.
+type paneInfo struct {
+	ID   string
+	Name string
+}
+
+// tmuxPanes returns pane root pid -> pane for every pane on the server.
+func tmuxPanes() map[int]paneInfo {
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F",
+		"#{pane_pid}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}").Output()
 	if err != nil {
-		return "", false
+		return nil
 	}
-	panes := map[int]string{}
+	panes := map[int]paneInfo{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		panePID, id, ok := strings.Cut(line, " ")
-		if !ok {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
 			continue
 		}
-		if n, err := strconv.Atoi(panePID); err == nil {
-			panes[n] = id
+		if pid, err := strconv.Atoi(fields[0]); err == nil {
+			panes[pid] = paneInfo{ID: fields[1], Name: fields[2]}
 		}
 	}
+	return panes
+}
+
+// paneFor finds the pane that pid runs in, walking pid's ancestor chain
+// until it hits a pane's root process.
+func paneFor(panes map[int]paneInfo, pid int) (paneInfo, bool) {
 	for p := pid; p > 1; p = parentPID(p) {
-		if id, ok := panes[p]; ok {
-			return id, true
+		if info, ok := panes[p]; ok {
+			return info, true
 		}
 	}
-	return "", false
+	return paneInfo{}, false
+}
+
+// tmuxPaneFor returns the id of the tmux pane that pid runs in.
+func tmuxPaneFor(pid int) (string, bool) {
+	info, ok := paneFor(tmuxPanes(), pid)
+	return info.ID, ok
 }
 

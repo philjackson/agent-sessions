@@ -34,6 +34,7 @@ const dimAfter = 24 * time.Hour
 const (
 	colProject = 28
 	colBranch  = 24
+	colPane    = 12
 )
 
 // colState fits every state word the index can show.
@@ -627,12 +628,13 @@ func (m model) helpView() string {
 
 func (m model) renderRow(idx int) string {
 	s := m.sessions[idx]
-	line := fmt.Sprintf("%4d %-*s  %s  %s  %s  %s",
+	line := fmt.Sprintf("%4d %-*s  %s  %s  %s  %s  %s",
 		idx+1,
 		colState, string(s.State),
 		s.Modified.Format("Jan 02 15:04"),
 		truncPad(s.Project(), colProject),
 		truncPad(s.Branch, colBranch),
+		truncPad(s.Pane, colPane),
 		s.Subject(),
 	)
 	return trunc(line, m.width)

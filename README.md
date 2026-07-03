@@ -10,9 +10,11 @@ go build -o agent-sessions .
 ## What it shows
 
 Every session transcript under `~/.claude/projects/`, newest first, one line
-per session: index, state, last-modified time, project directory, git branch,
-and a subject line (the session's AI-generated title, falling back to the
-first typed prompt). The list auto-refreshes every 2 seconds.
+per session: index, state, last-modified time, project directory, git
+branch, the tmux pane hosting the session (as `session:window.pane`, for
+live sessions found in one), and a subject line (the session's AI-generated
+title, falling back to the first typed prompt). The list auto-refreshes
+every 2 seconds.
 
 Sessions with a running `claude` process show a state:
 

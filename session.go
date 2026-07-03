@@ -44,6 +44,7 @@ type Session struct {
 	Size     int64
 	State    SessionState // empty unless Live
 	PID      int          // the running claude process; 0 unless Live
+	Pane     string       // session:window.pane hosting the process, if any
 }
 
 // Live reports whether a running claude process is attached to the session.
@@ -81,7 +82,7 @@ func (s Session) Delete() error {
 // matches reports whether the lowercase query appears in any of the
 // session's searchable fields.
 func (s Session) matches(q string) bool {
-	for _, f := range []string{s.Subject(), s.Project(), s.Branch, s.ID, s.CWD} {
+	for _, f := range []string{s.Subject(), s.Project(), s.Branch, s.ID, s.CWD, s.Pane} {
 		if strings.Contains(strings.ToLower(f), q) {
 			return true
 		}
@@ -312,13 +313,24 @@ type liveInfo struct {
 	PID   int
 }
 
-// markLive attaches the live state reported by running Claude Code processes.
+// markLive attaches the live state reported by running Claude Code
+// processes and locates the tmux pane hosting each live session.
 func markLive(sessions []Session) {
 	live := liveStates()
+	var panes map[int]paneInfo
+	loaded := false
 	for i := range sessions {
-		if info, ok := live[sessions[i].ID]; ok {
-			sessions[i].State = info.State
-			sessions[i].PID = info.PID
+		info, ok := live[sessions[i].ID]
+		if !ok {
+			continue
+		}
+		sessions[i].State = info.State
+		sessions[i].PID = info.PID
+		if !loaded {
+			panes, loaded = tmuxPanes(), true
+		}
+		if p, ok := paneFor(panes, info.PID); ok {
+			sessions[i].Pane = p.Name
 		}
 	}
 }
