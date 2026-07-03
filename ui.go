@@ -54,17 +54,20 @@ func newStyles(cfg Config) styles {
 }
 
 type model struct {
-	loader   *loader
-	styles   styles
-	enterCmd string // command template bound to Enter
-	sessions []Session
-	cursor   int
-	offset   int
-	width    int
-	height   int
-	loading  bool // a Load is in flight; don't start another
-	status   string
-	notice   string // shown instead of status until the next keypress
+	loader    *loader
+	styles    styles
+	enterCmd  string    // command template bound to Enter
+	all       []Session // every session, unfiltered
+	sessions  []Session // what the index shows: all, limited by query
+	query     string
+	searching bool // the search prompt is open and capturing keys
+	cursor    int
+	offset    int
+	width     int
+	height    int
+	loading   bool // a Load is in flight; don't start another
+	status    string
+	notice    string // shown instead of status until the next keypress
 }
 
 func newModel(cfg Config) model {
@@ -109,27 +112,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Error: " + msg.err.Error()
 			return m, nil
 		}
-		// Keep the cursor on the same session even if sort order changed.
-		var selectedID string
-		if m.cursor < len(m.sessions) {
-			selectedID = m.sessions[m.cursor].ID
-		}
-		m.sessions = msg.sessions
-		m.cursor = min(m.cursor, m.lastRow())
-		counts := map[SessionState]int{}
-		for i, s := range m.sessions {
-			if s.ID == selectedID {
-				m.cursor = i
-			}
-			if s.Live() {
-				counts[s.State]++
-			}
-		}
-		parts := []string{fmt.Sprintf("%d sessions", len(m.sessions))}
-		for _, st := range sessionStates {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
-		}
-		m.status = strings.Join(parts, ", ")
+		m.all = msg.sessions
+		m.applyFilter()
 
 	case tickMsg:
 		if m.loading {
@@ -150,11 +134,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.notice = ""
+		if m.searching {
+			m.handleSearchKey(msg)
+			m.clampOffset()
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "enter":
 			return m.gotoSession()
+		case "/":
+			m.searching = true
+			m.query = ""
+			m.applyFilter()
+		case "esc":
+			if m.query != "" {
+				m.query = ""
+				m.applyFilter()
+			}
 		case "j", "down":
 			m.cursor = min(m.cursor+1, m.lastRow())
 		case "k", "up":
@@ -218,6 +216,69 @@ func (m model) gotoSession() (tea.Model, tea.Cmd) {
 	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
+// handleSearchKey edits the query while the search prompt is open. The list
+// filters as the query changes; Enter keeps the limit, Esc clears it.
+func (m *model) handleSearchKey(msg tea.KeyMsg) {
+	switch msg.String() {
+	case "enter":
+		m.searching = false
+	case "esc":
+		m.searching = false
+		m.query = ""
+		m.applyFilter()
+	case "backspace":
+		if r := []rune(m.query); len(r) > 0 {
+			m.query = string(r[:len(r)-1])
+			m.applyFilter()
+		}
+	default:
+		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
+			m.query += string(msg.Runes)
+			m.applyFilter()
+		}
+	}
+}
+
+// applyFilter rebuilds the visible list from the full one, keeps the cursor
+// on the same session where possible, and refreshes the status counts.
+func (m *model) applyFilter() {
+	var selectedID string
+	if m.cursor < len(m.sessions) {
+		selectedID = m.sessions[m.cursor].ID
+	}
+	m.sessions = m.all
+	if q := strings.ToLower(m.query); q != "" {
+		m.sessions = nil
+		for _, s := range m.all {
+			if s.matches(q) {
+				m.sessions = append(m.sessions, s)
+			}
+		}
+	}
+	m.cursor = min(m.cursor, m.lastRow())
+	counts := map[SessionState]int{}
+	for i, s := range m.sessions {
+		if s.ID == selectedID {
+			m.cursor = i
+		}
+		if s.Live() {
+			counts[s.State]++
+		}
+	}
+	noun := "sessions"
+	if len(m.sessions) == 1 {
+		noun = "session"
+	}
+	parts := []string{fmt.Sprintf("%d %s", len(m.sessions), noun)}
+	for _, st := range sessionStates {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
+	}
+	if m.query != "" {
+		parts = append(parts, fmt.Sprintf("limit %q", m.query))
+	}
+	m.status = strings.Join(parts, ", ")
+}
+
 // lastRow is the highest valid cursor position.
 func (m model) lastRow() int {
 	return max(0, len(m.sessions)-1)
@@ -243,7 +304,7 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(m.styles.bar.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  g/G:Top/Bottom  r:Refresh", m.width)))
+	b.WriteString(m.styles.bar.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  /:Search  Esc:Clear  g/G:Top/Bottom  r:Refresh", m.width)))
 	b.WriteString("\n")
 
 	page := m.pageSize()
@@ -274,6 +335,9 @@ func (m model) View() string {
 	status := fmt.Sprintf("---Claude Sessions: %s---(%s)", m.status, pos)
 	if m.notice != "" {
 		status = m.notice
+	}
+	if m.searching {
+		status = "Search: " + m.query + "█"
 	}
 	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
 	return b.String()

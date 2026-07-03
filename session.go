@@ -64,6 +64,17 @@ func (s Session) Project() string {
 	return s.CWD
 }
 
+// matches reports whether the lowercase query appears in any of the
+// session's searchable fields.
+func (s Session) matches(q string) bool {
+	for _, f := range []string{s.Subject(), s.Project(), s.Branch, s.ID, s.CWD} {
+		if strings.Contains(strings.ToLower(f), q) {
+			return true
+		}
+	}
+	return false
+}
+
 // Subject is the line shown in the index: AI title, else first prompt, else slug.
 func (s Session) Subject() string {
 	if s.Title != "" {

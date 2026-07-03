@@ -33,10 +33,16 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | --- | --- |
 | `j` / `k`, arrows | move down / up |
 | `Enter` | switch to the session's tmux pane |
+| `/` | search: filter the list as you type, across all projects |
+| `Esc` | clear the search limit |
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
 | `r` | refresh |
 | `q` | quit |
+
+`/` matches case-insensitively against each session's title, project path,
+branch, and session id. `Enter` keeps the match as a limit (shown in the
+status bar) until `Esc` clears it.
 
 `Enter` runs a configurable shell command (see below). The default finds the
 tmux pane whose process tree contains the session's `claude` process and
