@@ -50,8 +50,9 @@ reverse = true
 # If the session is running in a tmux pane, jump to it: switch-client
 # moves the client when run inside tmux, attach-session takes over the
 # terminal when run outside it. Otherwise resume the session in a fresh
-# tmux window: the window starts an interactive shell (rc files, asdf,
-# direnv all apply) and the claude command is typed into it.
+# tmux window: the window starts an interactive shell — so your usual
+# environment setup (rc files, version managers like asdf, per-directory
+# tools like direnv, ...) applies — and the claude command is typed into it.
 enter = '''
 if [ -n {pane?} ]; then
     tmux select-pane -t {pane?} && tmux select-window -t {pane?}
@@ -62,5 +63,10 @@ else
 fi
 '''
 
-# New claude in a fresh tmux window: pick a project, type the first prompt.
-c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'
+# New claude in a fresh tmux window: pick a project, type the first
+# prompt. As with enter, the window starts an interactive shell and the
+# claude command is typed into it.
+c = '''
+p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker})
+tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter
+'''

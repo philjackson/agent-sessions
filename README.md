@@ -137,35 +137,30 @@ n = "cd {project-picker} && claude"
 
 ## Tip: create a new Claude session from the TUI
 
-Bind a key that picks a project, asks for the opening prompt, and starts
-`claude` with it in a fresh tmux window:
+The shipped default binds `c` to pick a project, ask for the opening
+prompt, and start `claude` with it in a fresh tmux window:
 
 ```toml
 [commands]
-c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'
+c = '''
+p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker})
+tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter
+'''
 ```
 
-Use `split-window` instead of `new-window` for a pane in the current
-window.
+Note the shape: the window is opened with *no* command — so it starts your
+normal interactive shell, applying whatever environment setup you use
+(rc files, version managers such as asdf, per-directory environments such
+as direnv) — and the claude invocation is then typed into it with
+`send-keys`. The simpler `tmux new-window -c {project-picker} "claude ..."`
+would run claude via a non-interactive shell where none of that setup
+applies. The default `enter` uses the same pattern for its dead-session
+branch. Use `split-window` instead of `new-window` for a pane in the
+current window.
 
-That form runs claude via a non-interactive shell, though — rc files are
-not sourced, so version managers (asdf) and per-directory environments
-(direnv) won't apply. If you use those, open the window with no command
-(it starts your normal interactive shell) and type the claude invocation
-into it with `send-keys`:
-
-```toml
-[commands]
-c = 'p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker}) && tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter'
-```
-
-The shipped default `enter` uses the same pattern for its dead-session
-branch, so resumed sessions get the project's full environment too.
-
-Quoting subtlety, for both forms: the expanded `{text-input:...}` value is
-single-quote escaped, and the double-quote wrapper hands it intact to the
-window's shell — a prompt containing a literal `"` is the one thing it
-can't carry.
+Quoting subtlety: the expanded `{text-input:...}` value is single-quote
+escaped, and the double-quote wrapper hands it intact to the window's
+shell — a prompt containing a literal `"` is the one thing it can't carry.
 
 ## Tip: a tmux key that jumps to agent-sessions
 
