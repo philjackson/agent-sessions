@@ -34,7 +34,8 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | `j` / `k`, arrows | move down / up |
 | `Enter` | switch to the session's tmux pane |
 | `/` | search: filter the list as you type, across all projects |
-| `Esc` | clear the search limit |
+| `f` | filter the list to one project, chosen via the project picker |
+| `Esc` | clear the search and project filters |
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
 | `d` | delete the session after a y/n confirmation |
@@ -48,8 +49,9 @@ offer that session — nothing a running Claude Code depends on. Sessions
 with a live claude process are refused.
 
 `/` matches case-insensitively against each session's title, project path,
-branch, and session id. `Enter` keeps the match as a limit (shown in the
-status bar) until `Esc` clears it.
+branch, and session id. `f` filters the list to a single project via the
+project picker. Both filters are shown in the status bar, combine with each
+other, and stay until `Esc` clears them.
 
 `Enter` runs a configurable shell command (see below). The default finds the
 tmux pane whose process tree contains the session's `claude` process and

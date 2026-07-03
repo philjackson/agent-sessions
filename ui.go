@@ -59,8 +59,9 @@ type model struct {
 	styles    styles
 	commands  map[string]string // key name -> command template
 	all       []Session         // every session, unfiltered
-	sessions  []Session         // what the index shows: all, limited by query
+	sessions  []Session         // what the index shows: all, limited by query/project
 	query     string
+	project   string // limit the index to this project cwd; "" is no limit
 	searching bool     // the search prompt is open and capturing keys
 	showHelp  bool
 	deleting  *Session // awaiting y/n confirmation to delete
@@ -84,10 +85,11 @@ func newModel(cfg Config) model {
 	}
 }
 
-// pickerState is the project-selection overlay shown while a command
-// containing {project-picker} waits for its pick.
+// pickerState is the project-selection overlay, opened either by a command
+// containing {project-picker} or by the f (filter by project) key.
 type pickerState struct {
 	active bool
+	filter bool     // the pick becomes the project filter, not a command var
 	items  []string // project cwds, most recently used first
 	cursor int
 	offset int
@@ -214,9 +216,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.searching = true
 			m.query = ""
 			m.applyFilter()
+		case "f":
+			m.picker = pickerState{active: true, filter: true, items: m.projectList()}
 		case "esc":
-			if m.query != "" {
+			if m.query != "" || m.project != "" {
 				m.query = ""
+				m.project = ""
 				m.applyFilter()
 			}
 		case "j", "down":
@@ -325,7 +330,14 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.picker = pickerState{}
 			break
 		}
-		p.vars["project-picker"] = p.items[p.cursor]
+		choice := p.items[p.cursor]
+		if p.filter {
+			m.picker = pickerState{}
+			m.project = choice
+			m.applyFilter()
+			break
+		}
+		p.vars["project-picker"] = choice
 		tmpl, vars := p.tmpl, p.vars
 		m.picker = pickerState{}
 		return m.continueCommand(tmpl, vars)
@@ -372,7 +384,7 @@ func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleSearchKey edits the query while the search prompt is open. The list
-// filters as the query changes; Enter keeps the limit, Esc clears it.
+// filters as the query changes; Enter keeps the filter, Esc clears it.
 func (m *model) handleSearchKey(msg tea.KeyMsg) {
 	switch msg.String() {
 	case "enter":
@@ -402,12 +414,16 @@ func (m *model) applyFilter() {
 		selectedID = m.sessions[m.cursor].ID
 	}
 	m.sessions = m.all
-	if q := strings.ToLower(m.query); q != "" {
+	if q := strings.ToLower(m.query); q != "" || m.project != "" {
 		m.sessions = nil
 		for _, s := range m.all {
-			if s.matches(q) {
-				m.sessions = append(m.sessions, s)
+			if m.project != "" && s.CWD != m.project {
+				continue
 			}
+			if q != "" && !s.matches(q) {
+				continue
+			}
+			m.sessions = append(m.sessions, s)
 		}
 	}
 	m.cursor = min(m.cursor, m.lastRow())
@@ -429,7 +445,10 @@ func (m *model) applyFilter() {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
 	}
 	if m.query != "" {
-		parts = append(parts, fmt.Sprintf("limit %q", m.query))
+		parts = append(parts, fmt.Sprintf("filter %q", m.query))
+	}
+	if m.project != "" {
+		parts = append(parts, "project "+displayPath(m.project))
 	}
 	m.status = strings.Join(parts, ", ")
 }
@@ -464,8 +483,12 @@ func (m model) View() string {
 		return m.pickerView()
 	}
 
+	help := "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  r:Refresh  ?:Help"
+	if m.query != "" || m.project != "" {
+		help = "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  Esc:Clear filter  r:Refresh  ?:Help"
+	}
 	var b strings.Builder
-	b.WriteString(m.styles.bar.Render(pad("q:Quit  j/k:Move  Enter:Go  /:Search  r:Refresh  ?:Help", m.width)))
+	b.WriteString(m.styles.bar.Render(pad(help, m.width)))
 	b.WriteString("\n")
 
 	page := m.pageSize()
@@ -540,7 +563,8 @@ func (m model) helpView() string {
 		"    j / k, arrows      move down / up",
 		"    ctrl+d / ctrl+u    half page down / up",
 		"    g / G              first / last session",
-		"    /                  search; Enter keeps the limit, Esc clears it",
+		"    /                  search; Enter keeps the filter, Esc clears it",
+		"    f                  filter the list to one project (opens the picker)",
 		"    d                  delete session (transcript + sidecar files; asks y/n)",
 		"    r                  refresh now",
 		"    ?                  this help",
