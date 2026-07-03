@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,11 +57,13 @@ func newStyles(cfg Config) styles {
 type model struct {
 	loader    *loader
 	styles    styles
-	enterCmd  string    // command template bound to Enter
-	all       []Session // every session, unfiltered
-	sessions  []Session // what the index shows: all, limited by query
+	commands  map[string]string // key name -> command template
+	all       []Session         // every session, unfiltered
+	sessions  []Session         // what the index shows: all, limited by query
 	query     string
 	searching bool // the search prompt is open and capturing keys
+	showHelp  bool
+	picker    pickerState
 	cursor    int
 	offset    int
 	width     int
@@ -74,9 +77,20 @@ func newModel(cfg Config) model {
 	return model{
 		loader:   newLoader(),
 		styles:   newStyles(cfg),
-		enterCmd: cfg.Commands.Enter,
+		commands: cfg.Commands,
 		loading:  true,
 	}
+}
+
+// pickerState is the project-selection overlay shown while a command
+// containing {project-picker} waits for its pick.
+type pickerState struct {
+	active bool
+	items  []string // project cwds, most recently used first
+	cursor int
+	offset int
+	tmpl   string            // the command awaiting the pick
+	vars   map[string]string // expansion vars captured at keypress
 }
 
 type sessionsLoadedMsg struct {
@@ -124,7 +138,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execDoneMsg:
 		if msg.err != nil {
-			m.notice = "enter command: " + msg.err.Error()
+			m.notice = "command: " + msg.err.Error()
 		}
 		if m.loading {
 			return m, nil
@@ -134,16 +148,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.notice = ""
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+		if m.picker.active {
+			return m.handlePickerKey(msg)
+		}
 		if m.searching {
 			m.handleSearchKey(msg)
 			m.clampOffset()
 			return m, nil
 		}
+		if tmpl := m.commands[msg.String()]; tmpl != "" {
+			return m.runCommand(tmpl)
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
-		case "enter":
-			return m.gotoSession()
+		case "?":
+			m.showHelp = true
 		case "/":
 			m.searching = true
 			m.query = ""
@@ -178,20 +202,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// gotoSession runs the configured enter command for the selected session,
+// runCommand runs a configured command template for the selected session,
 // handing it the terminal so interactive commands (tmux attach, editors)
 // work. Commands using {pane} or {pid} need a live session; {pane} also
 // needs the session's claude process to sit inside a tmux pane.
-func (m model) gotoSession() (tea.Model, tea.Cmd) {
+func (m model) runCommand(tmpl string) (tea.Model, tea.Cmd) {
 	if m.cursor >= len(m.sessions) {
 		return m, nil
 	}
 	s := m.sessions[m.cursor]
-	tmpl := m.enterCmd
-	if tmpl == "" {
-		m.notice = "No [commands] enter configured."
-		return m, nil
-	}
 	vars := map[string]string{
 		"id":   s.ID,
 		"pid":  strconv.Itoa(s.PID),
@@ -212,8 +231,63 @@ func (m model) gotoSession() (tea.Model, tea.Cmd) {
 		}
 		vars["pane"] = pane
 	}
+	if strings.Contains(tmpl, "{project-picker}") {
+		m.picker = pickerState{active: true, items: m.projectList(), tmpl: tmpl, vars: vars}
+		return m, nil
+	}
+	return m, execCmd(tmpl, vars)
+}
+
+// execCmd runs an expanded command template with the terminal attached.
+func execCmd(tmpl string, vars map[string]string) tea.Cmd {
 	cmd := exec.Command("sh", "-c", expandCommand(tmpl, vars))
-	return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return execDoneMsg{err} })
+	return tea.ExecProcess(cmd, func(err error) tea.Msg { return execDoneMsg{err} })
+}
+
+// projectList returns every known project cwd, most recently used first.
+func (m model) projectList() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range m.all { // sorted newest first
+		if s.CWD != "" && !seen[s.CWD] {
+			seen[s.CWD] = true
+			out = append(out, s.CWD)
+		}
+	}
+	return out
+}
+
+// handlePickerKey drives the project-selection overlay.
+func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p := &m.picker
+	switch msg.String() {
+	case "esc", "q":
+		m.picker = pickerState{}
+	case "enter":
+		if len(p.items) == 0 {
+			m.picker = pickerState{}
+			break
+		}
+		p.vars["project-picker"] = p.items[p.cursor]
+		tmpl, vars := p.tmpl, p.vars
+		m.picker = pickerState{}
+		return m, execCmd(tmpl, vars)
+	case "j", "down":
+		p.cursor = min(p.cursor+1, max(0, len(p.items)-1))
+	case "k", "up":
+		p.cursor = max(p.cursor-1, 0)
+	case "g", "home":
+		p.cursor = 0
+	case "G", "end":
+		p.cursor = max(0, len(p.items)-1)
+	}
+	if p.cursor < p.offset {
+		p.offset = p.cursor
+	}
+	if p.cursor >= p.offset+m.pageSize() {
+		p.offset = p.cursor - m.pageSize() + 1
+	}
+	return m, nil
 }
 
 // handleSearchKey edits the query while the search prompt is open. The list
@@ -302,9 +376,15 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
+	if m.showHelp {
+		return m.helpView()
+	}
+	if m.picker.active {
+		return m.pickerView()
+	}
 
 	var b strings.Builder
-	b.WriteString(m.styles.bar.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  /:Search  Esc:Clear  g/G:Top/Bottom  r:Refresh", m.width)))
+	b.WriteString(m.styles.bar.Render(pad("q:Quit  j/k:Move  Enter:Go  /:Search  r:Refresh  ?:Help", m.width)))
 	b.WriteString("\n")
 
 	page := m.pageSize()
@@ -340,6 +420,68 @@ func (m model) View() string {
 		status = "Search: " + m.query + "█"
 	}
 	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
+	return b.String()
+}
+
+// pickerView renders the project-selection overlay.
+func (m model) pickerView() string {
+	var b strings.Builder
+	b.WriteString(m.styles.bar.Render(pad("Select a project", m.width)))
+	b.WriteString("\n")
+	page := m.pageSize()
+	for i := 0; i < page; i++ {
+		idx := m.picker.offset + i
+		if idx < len(m.picker.items) {
+			line := trunc(fmt.Sprintf("%4d  %s", idx+1, displayPath(m.picker.items[idx])), m.width)
+			if idx == m.picker.cursor {
+				line = m.styles.selected.Render(pad(line, m.width))
+			}
+			b.WriteString(line)
+		}
+		b.WriteString("\n")
+	}
+	status := fmt.Sprintf("---Select a project: %d known---(Enter:Pick Esc:Cancel)", len(m.picker.items))
+	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
+	return b.String()
+}
+
+// helpView lists the built-in keys and every configured command.
+func (m model) helpView() string {
+	lines := []string{
+		"",
+		"  Built-in keys",
+		"    j / k, arrows      move down / up",
+		"    ctrl+d / ctrl+u    half page down / up",
+		"    g / G              first / last session",
+		"    /                  search; Enter keeps the limit, Esc clears it",
+		"    r                  refresh now",
+		"    ?                  this help",
+		"    q                  quit",
+		"",
+		"  Commands (from config)",
+	}
+	keys := make([]string, 0, len(m.commands))
+	for k, tmpl := range m.commands {
+		if tmpl != "" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		lines = append(lines, fmt.Sprintf("    %-18s %s", k, m.commands[k]))
+	}
+
+	var b strings.Builder
+	b.WriteString(m.styles.bar.Render(pad("Help", m.width)))
+	b.WriteString("\n")
+	page := m.pageSize()
+	for i := 0; i < page; i++ {
+		if i < len(lines) {
+			b.WriteString(trunc(lines[i], m.width))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString(m.styles.bar.Render(pad("---Help---(press any key to return)", m.width)))
 	return b.String()
 }
 

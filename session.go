@@ -56,12 +56,17 @@ func (s Session) Project() string {
 	if s.CWD == "" {
 		return "?"
 	}
+	return displayPath(s.CWD)
+}
+
+// displayPath shortens a path under the user's home directory to ~.
+func displayPath(path string) string {
 	if home, _ := os.UserHomeDir(); home != "" {
-		if rest, ok := strings.CutPrefix(s.CWD, home); ok {
+		if rest, ok := strings.CutPrefix(path, home); ok {
 			return "~" + rest
 		}
 	}
-	return s.CWD
+	return path
 }
 
 // matches reports whether the lowercase query appears in any of the

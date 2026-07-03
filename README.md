@@ -38,6 +38,7 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
 | `r` | refresh |
+| `?` | help: list all keys and configured commands |
 | `q` | quit |
 
 `/` matches case-insensitively against each session's title, project path,
@@ -65,14 +66,24 @@ Each UI element — `running`, `waiting`, `idle`, `dimmed`, `bar`, `selected`
 fg = "#af87ff"
 ```
 
-`[commands] enter` is the shell command bound to `Enter`. `{id}`, `{pid}`,
-`{cwd}`, `{file}` and `{pane}` expand to shell-quoted values ({pane} being
-the tmux pane hosting the session's claude process), and the command gets
-the terminal while it runs, so interactive commands work:
+`[commands]` binds keys to shell commands run on the selected session. Any
+Bubble Tea key name works — single characters, `enter`, or combos like
+`"ctrl+x"` (quoted). `{id}`, `{pid}`, `{cwd}`, `{file}` and `{pane}` expand
+to shell-quoted values ({pane} being the tmux pane hosting the session's
+claude process), and the command gets the terminal while it runs, so
+interactive commands work. Bindings take precedence over built-in keys;
+set one to `""` to unbind it. `?` shows the active bindings.
+
+`{project-picker}` is special: it first opens a selection screen listing
+every known project (the distinct working directories across all sessions,
+most recently used first) and expands to the chosen project's path.
 
 ```toml
 [commands]
 enter = "cd {cwd} && claude --resume {id}"
+o = "cd {cwd} && $EDITOR ."
+t = "less +G {file}"
+n = "cd {project-picker} && claude"
 ```
 
 ## Tip: a tmux key that jumps to agent-sessions

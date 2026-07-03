@@ -41,12 +41,22 @@ reverse = true
 reverse = true
 
 [commands]
-# Shell command run when pressing Enter on a session. {id}, {pid}, {cwd},
-# {file} and {pane} expand to shell-quoted values; {pane} is the tmux pane
-# hosting the session's claude process, and commands that use it are only
-# run for sessions found in a pane. The default jumps to that pane:
-# switch-client moves the client when run inside tmux, attach-session
-# takes over the terminal when run outside it.
+# Shell commands bound to keys, run on the selected session. Keys are
+# Bubble Tea key names: single characters ("o", "D"), "enter", or combos
+# like "ctrl+x" and "f5" (quote names with + or . in them). {id}, {pid},
+# {cwd}, {file} and {pane} expand to shell-quoted values; {pane} is the
+# tmux pane hosting the session's claude process, and commands using it
+# are only run for sessions found in a pane. {project-picker} first opens
+# a selection screen over every known project and expands to the chosen
+# project's path. Bindings here take precedence over the built-in keys;
+# set one to "" to unbind it.
+#
+# The default enter jumps to the session's pane: switch-client moves the
+# client when run inside tmux, attach-session takes over the terminal
+# when run outside it. More examples:
+#   o = "cd {cwd} && $EDITOR ."
+#   t = "less +G {file}"
+#   n = "cd {project-picker} && claude"
 enter = "tmux select-pane -t {pane} && tmux select-window -t {pane} && tmux switch-client -t {pane} 2>/dev/null || tmux attach-session -t {pane}"
 `
 
@@ -60,9 +70,7 @@ type Config struct {
 		Bar      StyleConfig `toml:"bar"`
 		Selected StyleConfig `toml:"selected"`
 	} `toml:"styles"`
-	Commands struct {
-		Enter string `toml:"enter"`
-	} `toml:"commands"`
+	Commands map[string]string `toml:"commands"`
 }
 
 // StyleConfig describes one visual element of the UI.
@@ -130,8 +138,19 @@ func loadConfig() (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
+	defaults := cfg.Commands
 	if _, err := toml.Decode(string(data), &cfg); err != nil {
 		return cfg, fmt.Errorf("%s: %w", path, err)
+	}
+	// Merge semantics for [commands], like the style sections: a user file
+	// adding keys keeps the default bindings unless it redefines them.
+	if cfg.Commands == nil {
+		cfg.Commands = map[string]string{}
+	}
+	for k, v := range defaults {
+		if _, ok := cfg.Commands[k]; !ok {
+			cfg.Commands[k] = v
+		}
 	}
 	return cfg, nil
 }
