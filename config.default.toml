@@ -1,0 +1,49 @@
+# agent-sessions configuration.
+#
+# Each style section accepts:
+#   fg, bg                 colour: an ANSI/256 number ("0"-"255") or hex ("#rrggbb")
+#   bold, faint, reverse   boolean attributes
+# Omitted keys keep their defaults.
+
+[styles.running]   # sessions whose turn is in progress
+fg = "2"
+
+[styles.waiting]   # sessions blocked on the user, e.g. a permission prompt
+fg = "3"
+bold = true
+
+[styles.idle]      # sessions waiting for the next prompt
+fg = "6"
+
+[styles.dimmed]    # sessions with no activity for over a day
+faint = true
+
+[styles.bar]       # the help and status bars
+reverse = true
+
+[styles.selected]  # the cursor row
+reverse = true
+
+[commands]
+# Shell commands bound to keys, run on the selected session. Keys are
+# Bubble Tea key names: single characters ("o", "D"), "enter", or combos
+# like "ctrl+x" and "f5" (quote names with + or . in them). {id}, {pid},
+# {cwd}, {file} and {pane} expand to shell-quoted values; {pane} is the
+# tmux pane hosting the session's claude process, and commands using it
+# are only run for sessions found in a pane. Two placeholders are
+# interactive and resolve before the command runs: {project-picker} opens
+# a selection screen over every known project and expands to the chosen
+# project's path, and {text-input} (or {text-input:Some label}) asks for
+# a line of text. Bindings here take precedence over the built-in keys;
+# set one to "" to unbind it.
+#
+# The default enter jumps to the session's pane: switch-client moves the
+# client when run inside tmux, attach-session takes over the terminal
+# when run outside it. More examples:
+#   o = "cd {cwd} && $EDITOR ."
+#   t = "less +G {file}"
+#   n = "cd {project-picker} && claude"
+enter = "tmux select-pane -t {pane} && tmux select-window -t {pane} && tmux switch-client -t {pane} 2>/dev/null || tmux attach-session -t {pane}"
+
+# New claude in a fresh tmux window: pick a project, type the first prompt.
+c = 'tmux new-window -c {project-picker} "claude {text-input:Prompt}"'

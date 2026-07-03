@@ -60,8 +60,10 @@ process, not under tmux) get a status-bar notice instead.
 ## Configuration
 
 Configuration lives in `$XDG_CONFIG_HOME/agent-sessions/config.toml`
-(usually `~/.config/agent-sessions/config.toml`); a commented default file
-is written on first run. Omitted keys keep their defaults.
+(usually `~/.config/agent-sessions/config.toml`); on first run the shipped
+default file — [`config.default.toml`](config.default.toml), embedded in
+the binary at build time — is written there. Omitted keys keep their
+defaults.
 
 Each UI element — `running`, `waiting`, `idle`, `dimmed`, `bar`, `selected`
 — is a `[styles.*]` section accepting `fg`/`bg` (ANSI/256 number or
