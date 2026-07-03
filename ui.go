@@ -8,14 +8,29 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const refreshEvery = 2 * time.Second
 
+// Index column widths; the subject column takes the remaining width.
+const (
+	colProject = 28
+	colBranch  = 24
+)
+
+// colState fits every state word the index can show.
+var colState = func() int {
+	w := len(StateUnknown)
+	for _, st := range sessionStates {
+		w = max(w, len(st))
+	}
+	return w
+}()
+
 var (
-	barStyle      = lipgloss.NewStyle().Reverse(true)
-	selectedStyle = lipgloss.NewStyle().Reverse(true)
-	stateStyles   = map[SessionState]lipgloss.Style{
+	reverseStyle = lipgloss.NewStyle().Reverse(true)
+	stateStyles  = map[SessionState]lipgloss.Style{
 		StateRunning: lipgloss.NewStyle().Foreground(lipgloss.Color("2")),
 		StateWaiting: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")),
 		StateIdle:    lipgloss.NewStyle().Foreground(lipgloss.Color("6")),
@@ -23,13 +38,19 @@ var (
 )
 
 type model struct {
+	loader   *loader
 	sessions []Session
 	cursor   int
 	offset   int
 	width    int
 	height   int
+	loading  bool // a Load is in flight; don't start another
 	status   string
 	notice   string // shown instead of status until the next keypress
+}
+
+func newModel() model {
+	return model{loader: newLoader(), loading: true}
 }
 
 type sessionsLoadedMsg struct {
@@ -39,8 +60,8 @@ type sessionsLoadedMsg struct {
 
 type tickMsg struct{}
 
-func loadCmd() tea.Msg {
-	sessions, err := LoadSessions()
+func (m model) loadCmd() tea.Msg {
+	sessions, err := m.loader.Load()
 	return sessionsLoadedMsg{sessions: sessions, err: err}
 }
 
@@ -49,7 +70,7 @@ func tickCmd() tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(loadCmd, tickCmd())
+	return tea.Batch(m.loadCmd, tickCmd())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -58,6 +79,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 
 	case sessionsLoadedMsg:
+		m.loading = false
 		if msg.err != nil {
 			m.status = "Error: " + msg.err.Error()
 			return m, nil
@@ -68,21 +90,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selectedID = m.sessions[m.cursor].ID
 		}
 		m.sessions = msg.sessions
-		m.cursor = min(m.cursor, max(0, len(m.sessions)-1))
+		m.cursor = min(m.cursor, m.lastRow())
 		counts := map[SessionState]int{}
 		for i, s := range m.sessions {
 			if s.ID == selectedID {
 				m.cursor = i
 			}
-			if s.Live {
+			if s.Live() {
 				counts[s.State]++
 			}
 		}
-		m.status = fmt.Sprintf("%d sessions, %d running, %d waiting, %d idle",
-			len(m.sessions), counts[StateRunning], counts[StateWaiting], counts[StateIdle])
+		parts := []string{fmt.Sprintf("%d sessions", len(m.sessions))}
+		for _, st := range sessionStates {
+			parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
+		}
+		m.status = strings.Join(parts, ", ")
 
 	case tickMsg:
-		return m, tea.Batch(loadCmd, tickCmd())
+		if m.loading {
+			return m, tickCmd()
+		}
+		m.loading = true
+		return m, tea.Batch(m.loadCmd, tickCmd())
 
 	case tea.KeyMsg:
 		m.notice = ""
@@ -92,20 +121,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			return m.gotoSession()
 		case "j", "down":
-			m.cursor = min(m.cursor+1, max(0, len(m.sessions)-1))
+			m.cursor = min(m.cursor+1, m.lastRow())
 		case "k", "up":
 			m.cursor = max(m.cursor-1, 0)
 		case "g", "home":
 			m.cursor = 0
 		case "G", "end":
-			m.cursor = max(0, len(m.sessions)-1)
+			m.cursor = m.lastRow()
 		case "ctrl+d", "pgdown":
-			m.cursor = min(m.cursor+m.pageSize()/2, max(0, len(m.sessions)-1))
+			m.cursor = min(m.cursor+m.pageSize()/2, m.lastRow())
 		case "ctrl+u", "pgup":
 			m.cursor = max(m.cursor-m.pageSize()/2, 0)
 		case "r":
+			if m.loading {
+				break
+			}
+			m.loading = true
 			m.status = "Refreshing..."
-			return m, loadCmd
+			return m, m.loadCmd
 		}
 	}
 	m.clampOffset()
@@ -119,7 +152,7 @@ func (m model) gotoSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	s := m.sessions[m.cursor]
-	if !s.Live || s.PID == 0 {
+	if !s.Live() {
 		m.notice = "Session has no running claude process."
 		return m, nil
 	}
@@ -139,7 +172,12 @@ func (m model) gotoSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, tea.ExecProcess(exec.Command("tmux", "attach-session", "-t", pane),
-		func(error) tea.Msg { return loadCmd() })
+		func(error) tea.Msg { return m.loadCmd() })
+}
+
+// lastRow is the highest valid cursor position.
+func (m model) lastRow() int {
+	return max(0, len(m.sessions)-1)
 }
 
 // pageSize is the number of index rows visible between the two bars.
@@ -162,7 +200,7 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(barStyle.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  g/G:Top/Bottom  r:Refresh", m.width)))
+	b.WriteString(reverseStyle.Render(pad("q:Quit  j:Down  k:Up  Enter:Switch  g/G:Top/Bottom  r:Refresh", m.width)))
 	b.WriteString("\n")
 
 	page := m.pageSize()
@@ -171,7 +209,7 @@ func (m model) View() string {
 		if idx < len(m.sessions) {
 			line := m.renderRow(idx)
 			if idx == m.cursor {
-				line = selectedStyle.Render(pad(line, m.width))
+				line = reverseStyle.Render(pad(line, m.width))
 			} else if style, ok := stateStyles[m.sessions[idx].State]; ok {
 				line = style.Render(line)
 			}
@@ -188,23 +226,25 @@ func (m model) View() string {
 	if m.notice != "" {
 		status = m.notice
 	}
-	b.WriteString(barStyle.Render(pad(status, m.width)))
+	b.WriteString(reverseStyle.Render(pad(status, m.width)))
 	return b.String()
 }
 
 func (m model) renderRow(idx int) string {
 	s := m.sessions[idx]
-	line := fmt.Sprintf("%4d %-7s  %s  %s  %s  %s",
+	line := fmt.Sprintf("%4d %-*s  %s  %s  %s  %s",
 		idx+1,
-		string(s.State),
+		colState, string(s.State),
 		s.Modified.Format("Jan 02 15:04"),
-		truncPad(s.Project(), 28),
-		truncPad(s.Branch, 24),
+		truncPad(s.Project(), colProject),
+		truncPad(s.Branch, colBranch),
 		s.Subject(),
 	)
 	return trunc(line, m.width)
 }
 
+// pad and trunc both measure display cells (not runes or bytes), so wide
+// characters in titles and paths can't skew the columns.
 func pad(s string, w int) string {
 	if d := w - lipgloss.Width(s); d > 0 {
 		return s + strings.Repeat(" ", d)
@@ -213,14 +253,7 @@ func pad(s string, w int) string {
 }
 
 func trunc(s string, w int) string {
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	if w < 1 {
-		return ""
-	}
-	return string(r[:w-1]) + "…"
+	return ansi.Truncate(s, w, "…")
 }
 
 func truncPad(s string, w int) string {

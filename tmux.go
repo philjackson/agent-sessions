@@ -37,27 +37,17 @@ func tmuxPaneFor(pid int) (string, bool) {
 	return "", false
 }
 
-// parentPID returns pid's parent, or 0 if unknown.
-func parentPID(pid int) int {
-	fields := procStatFields(pid)
-	if len(fields) < 2 {
-		return 0
-	}
-	n, _ := strconv.Atoi(fields[1]) // stat field 4: ppid
-	return n
+// tmux runs a tmux command, discarding output.
+func tmux(args ...string) error {
+	return exec.Command("tmux", args...).Run()
 }
 
 // tmuxSelect makes pane the active pane of the active window of its session.
 func tmuxSelect(pane string) error {
-	for _, args := range [][]string{
-		{"select-pane", "-t", pane},
-		{"select-window", "-t", pane},
-	} {
-		if err := exec.Command("tmux", args...).Run(); err != nil {
-			return err
-		}
+	if err := tmux("select-pane", "-t", pane); err != nil {
+		return err
 	}
-	return nil
+	return tmux("select-window", "-t", pane)
 }
 
 // tmuxSwitchTo moves the current tmux client to pane (inside tmux only).
@@ -65,5 +55,5 @@ func tmuxSwitchTo(pane string) error {
 	if err := tmuxSelect(pane); err != nil {
 		return err
 	}
-	return exec.Command("tmux", "switch-client", "-t", pane).Run()
+	return tmux("switch-client", "-t", pane)
 }

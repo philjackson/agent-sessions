@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -20,7 +19,18 @@ const (
 	StateRunning SessionState = "running" // Claude's turn is in progress
 	StateWaiting SessionState = "waiting" // blocked on the user, e.g. a permission prompt
 	StateIdle    SessionState = "idle"    // waiting for the next prompt
+	StateUnknown SessionState = "unknown" // the registry reported a status we don't know
 )
+
+// sessionStates is the canonical display order for live-state summaries.
+var sessionStates = []SessionState{StateRunning, StateWaiting, StateIdle}
+
+// registryStates translates the registry's status vocabulary to ours.
+var registryStates = map[string]SessionState{
+	"busy":    StateRunning,
+	"waiting": StateWaiting,
+	"idle":    StateIdle,
+}
 
 // Session is one Claude Code session transcript found on this machine.
 type Session struct {
@@ -32,9 +42,13 @@ type Session struct {
 	Title    string
 	Modified time.Time
 	Size     int64
-	Live     bool
 	State    SessionState // empty unless Live
 	PID      int          // the running claude process; 0 unless Live
+}
+
+// Live reports whether a running claude process is attached to the session.
+func (s Session) Live() bool {
+	return s.PID != 0
 }
 
 // Project returns a short display name for the session's working directory.
@@ -42,12 +56,10 @@ func (s Session) Project() string {
 	if s.CWD == "" {
 		return "?"
 	}
-	home, _ := os.UserHomeDir()
-	if home != "" && strings.HasPrefix(s.CWD, home) {
-		if s.CWD == home {
-			return "~"
+	if home, _ := os.UserHomeDir(); home != "" {
+		if rest, ok := strings.CutPrefix(s.CWD, home); ok {
+			return "~" + rest
 		}
-		return "~" + strings.TrimPrefix(s.CWD, home)
 	}
 	return s.CWD
 }
@@ -82,20 +94,39 @@ const (
 	tailScanBytes = 64 * 1024
 )
 
-// LoadSessions scans ~/.claude/projects for session transcripts,
-// newest first, with live processes marked.
-func LoadSessions() ([]Session, error) {
+// claudeDir returns the path of a directory under ~/.claude.
+func claudeDir(elem ...string) (string, error) {
 	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(append([]string{home, ".claude"}, elem...)...), nil
+}
+
+// loader loads sessions, caching parsed transcript metadata between calls so
+// the periodic refresh only re-parses files that actually changed.
+type loader struct {
+	cache map[string]Session // by path; entries hold no live state
+}
+
+func newLoader() *loader {
+	return &loader{cache: map[string]Session{}}
+}
+
+// Load scans ~/.claude/projects for session transcripts, newest first, with
+// live processes marked. Not safe for concurrent calls.
+func (ld *loader) Load() ([]Session, error) {
+	root, err := claudeDir("projects")
 	if err != nil {
 		return nil, err
 	}
-	root := filepath.Join(home, ".claude", "projects")
 	projectDirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
 	}
 
 	var sessions []Session
+	fresh := make(map[string]Session, len(ld.cache))
 	for _, pd := range projectDirs {
 		if !pd.IsDir() {
 			continue
@@ -113,16 +144,22 @@ func LoadSessions() ([]Session, error) {
 			if err != nil {
 				continue
 			}
-			s := Session{
-				ID:       strings.TrimSuffix(f.Name(), ".jsonl"),
-				File:     filepath.Join(dir, f.Name()),
-				Modified: info.ModTime(),
-				Size:     info.Size(),
+			path := filepath.Join(dir, f.Name())
+			s, ok := ld.cache[path]
+			if !ok || !s.Modified.Equal(info.ModTime()) || s.Size != info.Size() {
+				s = Session{
+					ID:       strings.TrimSuffix(f.Name(), ".jsonl"),
+					File:     path,
+					Modified: info.ModTime(),
+					Size:     info.Size(),
+				}
+				parseTranscript(&s)
 			}
-			parseTranscript(&s)
+			fresh[path] = s
 			sessions = append(sessions, s)
 		}
 	}
+	ld.cache = fresh // also drops entries for deleted files
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].Modified.After(sessions[j].Modified)
@@ -225,20 +262,17 @@ func userPrompt(l transcriptLine) string {
 	if text == "" || strings.HasPrefix(text, "<") {
 		return ""
 	}
-	if i := strings.IndexByte(text, '\n'); i >= 0 {
-		text = text[:i]
-	}
+	text, _, _ = strings.Cut(text, "\n")
 	return text
 }
 
 // registrySession mirrors ~/.claude/sessions/<pid>.json, the per-process
 // status file each running Claude Code instance maintains.
 type registrySession struct {
-	PID        int    `json:"pid"`
-	SessionID  string `json:"sessionId"`
-	ProcStart  string `json:"procStart"`
-	Status     string `json:"status"`
-	WaitingFor string `json:"waitingFor"`
+	PID       int    `json:"pid"`
+	SessionID string `json:"sessionId"`
+	ProcStart string `json:"procStart"`
+	Status    string `json:"status"`
 }
 
 // liveInfo is what the registry tells us about one running session.
@@ -252,7 +286,6 @@ func markLive(sessions []Session) {
 	live := liveStates()
 	for i := range sessions {
 		if info, ok := live[sessions[i].ID]; ok {
-			sessions[i].Live = true
 			sessions[i].State = info.State
 			sessions[i].PID = info.PID
 		}
@@ -264,11 +297,10 @@ func markLive(sessions []Session) {
 // can linger, so each pid is checked against its process start time.
 func liveStates() map[string]liveInfo {
 	live := map[string]liveInfo{}
-	home, err := os.UserHomeDir()
+	dir, err := claudeDir("sessions")
 	if err != nil {
 		return live
 	}
-	dir := filepath.Join(home, ".claude", "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return live
@@ -285,35 +317,11 @@ func liveStates() map[string]liveInfo {
 		if r.ProcStart != procStartTime(r.PID) {
 			continue // stale file: pid dead or recycled
 		}
-		state := SessionState(r.Status)
-		if r.Status == "busy" {
-			state = StateRunning
+		state, ok := registryStates[r.Status]
+		if !ok {
+			state = StateUnknown
 		}
 		live[r.SessionID] = liveInfo{State: state, PID: r.PID}
 	}
 	return live
-}
-
-// procStatFields returns the fields of /proc/<pid>/stat that follow the
-// parenthesized comm (which may contain spaces), or nil if pid is gone.
-func procStatFields(pid int) []string {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return nil
-	}
-	i := strings.LastIndexByte(string(data), ')')
-	if i < 0 {
-		return nil
-	}
-	return strings.Fields(string(data[i+1:]))
-}
-
-// procStartTime returns stat field 22 (process start time in clock ticks),
-// or "" if the process doesn't exist.
-func procStartTime(pid int) string {
-	fields := procStatFields(pid)
-	if len(fields) < 20 {
-		return ""
-	}
-	return fields[19] // fields[0] is stat field 3 (state)
 }
