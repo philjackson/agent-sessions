@@ -8,10 +8,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
+
+// newLineInput returns a focused single-line input with readline-style
+// editing (ctrl+a/e, alt+b/f, ctrl+w/k/u, arrows).
+func newLineInput() textinput.Model {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.Cursor.SetMode(cursor.CursorStatic)
+	ti.Focus()
+	return ti
+}
 
 const refreshEvery = 2 * time.Second
 
@@ -61,8 +73,9 @@ type model struct {
 	all       []Session         // every session, unfiltered
 	sessions  []Session         // what the index shows: all, limited by query/project
 	query     string
-	project   string // limit the index to this project cwd; "" is no limit
-	searching bool     // the search prompt is open and capturing keys
+	project   string          // limit the index to this project cwd; "" is no limit
+	input     textinput.Model // line editor backing the search and text prompts
+	searching bool            // the search prompt is open and capturing keys
 	showHelp  bool
 	deleting  *Session // awaiting y/n confirmation to delete
 	picker    pickerState
@@ -98,12 +111,11 @@ type pickerState struct {
 }
 
 // promptState is the one-line text prompt shown while a command containing
-// {text-input} waits for its text.
+// {text-input} waits for its text; the typed value lives in model.input.
 type promptState struct {
 	active bool
 	label  string
-	token  string // the exact {text-input...} placeholder being filled
-	input  string
+	token  string            // the exact {text-input...} placeholder being filled
 	tmpl   string            // the command awaiting the text
 	vars   map[string]string // expansion vars captured at keypress
 }
@@ -190,9 +202,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handlePromptKey(msg)
 		}
 		if m.searching {
-			m.handleSearchKey(msg)
+			cmd := m.handleSearchKey(msg)
 			m.clampOffset()
-			return m, nil
+			return m, cmd
 		}
 		if tmpl := m.commands[msg.String()]; tmpl != "" {
 			return m.runCommand(tmpl)
@@ -215,6 +227,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			m.searching = true
 			m.query = ""
+			m.input = newLineInput()
 			m.applyFilter()
 		case "f":
 			m.picker = pickerState{active: true, filter: true, items: m.projectList()}
@@ -295,6 +308,7 @@ func (m model) continueCommand(tmpl string, vars map[string]string) (tea.Model, 
 			label = "Input"
 		}
 		m.prompt = promptState{active: true, label: label, token: match[0], tmpl: tmpl, vars: vars}
+		m.input = newLineInput()
 		return m, nil
 	}
 	return m, execCmd(tmpl, vars)
@@ -362,48 +376,45 @@ func (m model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // handlePromptKey edits the pending {text-input} value. Enter substitutes
 // it (shell-quoted) and continues resolving the command; Esc cancels.
 func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	p := &m.prompt
 	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
 	case "enter":
-		tmpl := strings.ReplaceAll(p.tmpl, p.token, shellQuote(p.input))
-		vars := p.vars
+		p := m.prompt
+		tmpl := strings.ReplaceAll(p.tmpl, p.token, shellQuote(m.input.Value()))
 		m.prompt = promptState{}
-		return m.continueCommand(tmpl, vars)
+		return m.continueCommand(tmpl, p.vars)
 	case "esc":
 		m.prompt = promptState{}
-	case "backspace":
-		if r := []rune(p.input); len(r) > 0 {
-			p.input = string(r[:len(r)-1])
-		}
-	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			p.input += string(msg.Runes)
-		}
+		return m, nil
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
 }
 
 // handleSearchKey edits the query while the search prompt is open. The list
 // filters as the query changes; Enter keeps the filter, Esc clears it.
-func (m *model) handleSearchKey(msg tea.KeyMsg) {
+func (m *model) handleSearchKey(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
+	case "ctrl+c":
+		return tea.Quit
 	case "enter":
 		m.searching = false
+		return nil
 	case "esc":
 		m.searching = false
 		m.query = ""
 		m.applyFilter()
-	case "backspace":
-		if r := []rune(m.query); len(r) > 0 {
-			m.query = string(r[:len(r)-1])
-			m.applyFilter()
-		}
-	default:
-		if msg.Type == tea.KeyRunes || msg.Type == tea.KeySpace {
-			m.query += string(msg.Runes)
-			m.applyFilter()
-		}
+		return nil
 	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	if v := m.input.Value(); v != m.query {
+		m.query = v
+		m.applyFilter()
+	}
+	return cmd
 }
 
 // applyFilter rebuilds the visible list from the full one, keeps the cursor
@@ -451,6 +462,14 @@ func (m *model) applyFilter() {
 		parts = append(parts, "project "+displayPath(m.project))
 	}
 	m.status = strings.Join(parts, ", ")
+}
+
+// inputView renders the line editor sized to the space left of its label,
+// scrolling horizontally when the value outgrows it.
+func (m model) inputView(label string) string {
+	in := m.input
+	in.Width = max(8, m.width-lipgloss.Width(label)-2)
+	return in.View()
 }
 
 // lastRow is the highest valid cursor position.
@@ -521,10 +540,10 @@ func (m model) View() string {
 		status = m.notice
 	}
 	if m.searching {
-		status = "Search: " + m.query + "█"
+		status = "Search: " + m.inputView("Search: ")
 	}
 	if m.prompt.active {
-		status = m.prompt.label + ": " + m.prompt.input + "█"
+		status = m.prompt.label + ": " + m.inputView(m.prompt.label+": ")
 	}
 	if m.deleting != nil {
 		status = fmt.Sprintf("Delete %q? (y/n)", m.deleting.Subject())
