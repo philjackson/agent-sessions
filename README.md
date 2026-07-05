@@ -156,6 +156,16 @@ t = "less +G {file}"
 n = "cd {project-picker} && claude"
 ```
 
+### Command log
+
+Every command run from a binding is appended, with timestamps, exit status,
+duration, and everything it printed, to
+`$XDG_STATE_HOME/agent-sessions/commands.log` (usually
+`~/.local/state/agent-sessions/commands.log`). When a command fails, the
+status-bar notice points there — that's the first place to look when a
+binding misbehaves. Commands run with the real terminal as their input, so
+they stay fully interactive; only their output is captured.
+
 ## Tip: create a new Claude session from the TUI
 
 The shipped default binds `c` to pick a project, ask for the opening
@@ -198,7 +208,11 @@ if [ -n "$pane" ]; then
     tmux select-pane -t "$pane"
     tmux switch-client -t "$pane"
 else
-    tmux new-window -n sessions agent-sessions
+    # Start via the window's interactive shell so the TUI (and every
+    # command it runs) gets the full user environment, not the tmux
+    # server's.
+    win=$(tmux new-window -P -F '#{pane_id}' -n sessions)
+    tmux send-keys -t "$win" 'exec agent-sessions' Enter
 fi
 ```
 

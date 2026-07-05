@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -187,7 +186,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case execDoneMsg:
 		if msg.err != nil {
-			m.notice = "command: " + msg.err.Error()
+			m.notice = fmt.Sprintf("command: %s — output in %s",
+				msg.err, displayPath(commandLogPath()))
 		}
 		if m.loading {
 			return m, nil
@@ -350,12 +350,6 @@ func (m model) continueCommand(tmpl string, vars map[string]string) (tea.Model, 
 		return m, nil
 	}
 	return m, execCmd(tmpl, vars)
-}
-
-// execCmd runs an expanded command template with the terminal attached.
-func execCmd(tmpl string, vars map[string]string) tea.Cmd {
-	cmd := exec.Command("sh", "-c", expandCommand(tmpl, vars))
-	return tea.ExecProcess(cmd, func(err error) tea.Msg { return execDoneMsg{err} })
 }
 
 // projectList returns every known project cwd, most recently used first.
