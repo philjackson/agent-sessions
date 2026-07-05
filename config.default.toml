@@ -24,6 +24,17 @@ reverse = true
 [styles.selected]  # the cursor row
 reverse = true
 
+[circleci]
+# With a token (set here or via $CIRCLECI_TOKEN / $CIRCLE_TOKEN), the
+# index gains a column showing the latest CircleCI status of each
+# session's branch: pass, fail, run, hold, or - when the branch has no
+# pipelines. The project slug is derived from the git origin remote
+# (github.com/org/repo -> gh/org/repo); override it per project
+# directory when that's wrong:
+#   [circleci.projects]
+#   "~/Projects/foo" = "gh/acme/foo"
+token = ""
+
 [commands]
 # Shell commands bound to keys, run on the selected session. Keys are
 # Bubble Tea key names: single characters ("o", "D"), "enter", or combos
@@ -46,6 +57,7 @@ reverse = true
 #   o = "cd {cwd} && $EDITOR ."
 #   t = "less +G {file}"
 #   n = "cd {project-picker} && claude"
+#   b = "xdg-open {ci-build-url}"   # open on macOS; needs [circleci]
 
 # If the session is running in a tmux pane, jump to it: switch-client
 # moves the client when run inside tmux, attach-session takes over the

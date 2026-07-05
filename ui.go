@@ -35,6 +35,7 @@ const (
 	colProject = 28
 	colBranch  = 24
 	colPane    = 12
+	colCI      = 4
 )
 
 // colState fits every state word the index can show.
@@ -71,6 +72,10 @@ type model struct {
 	loader    *loader
 	styles    styles
 	commands  map[string]string // key name -> command template
+	ciToken   string            // "" disables the CI column
+	ciSlugs   map[string]string // cwd -> CircleCI project slug ("" = none)
+	ci        map[string]ciEntry
+	ciPending map[string]time.Time // slug@branch (or cwd@branch) in flight
 	all       []Session         // every session, unfiltered
 	sessions  []Session         // what the index shows: all, limited by query/project
 	query     string
@@ -91,12 +96,17 @@ type model struct {
 }
 
 func newModel(cfg Config) model {
-	return model{
-		loader:   newLoader(),
-		styles:   newStyles(cfg),
-		commands: cfg.Commands,
-		loading:  true,
+	m := model{
+		loader:    newLoader(),
+		styles:    newStyles(cfg),
+		commands:  cfg.Commands,
+		ciToken:   cfg.ciToken(),
+		ciSlugs:   cfg.ciOverrides(),
+		ci:        map[string]ciEntry{},
+		ciPending: map[string]time.Time{},
+		loading:   true,
 	}
+	return m
 }
 
 // pickerState is the project-selection overlay, opened either by a command
@@ -156,6 +166,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.all = msg.sessions
 		m.applyFilter()
+		m.clampOffset()
+		return m, m.ciFetchCmd()
+
+	case ciMsg:
+		for cwd, slug := range msg.slugs {
+			m.ciSlugs[cwd] = slug
+		}
+		for key, e := range msg.entries {
+			m.ci[key] = e
+			delete(m.ciPending, key)
+		}
 
 	case tickMsg:
 		if m.loading {
@@ -299,6 +320,14 @@ func (m model) runCommand(tmpl string) (tea.Model, tea.Cmd) {
 			m.notice = "Session is not running in a tmux pane."
 			return m, nil
 		}
+	}
+	if strings.Contains(tmpl, "{ci-build-url}") {
+		u := m.ciBuildURL(s)
+		if u == "" {
+			m.notice = "No CircleCI project known for this session."
+			return m, nil
+		}
+		vars["ci-build-url"] = u
 	}
 	return m.continueCommand(tmpl, vars)
 }
@@ -473,6 +502,50 @@ func (m *model) applyFilter() {
 	m.status = strings.Join(parts, ", ")
 }
 
+// ciFetchCmd starts a background fetch of CI statuses for visible rows
+// that are missing or stale, or returns nil when there is nothing to do.
+func (m *model) ciFetchCmd() tea.Cmd {
+	if m.ciToken == "" {
+		return nil
+	}
+	now := time.Now()
+	var targets []ciTarget
+	for i := m.offset; i < min(m.offset+m.pageSize(), len(m.sessions)); i++ {
+		s := m.sessions[i]
+		if s.CWD == "" || s.Branch == "" || s.Branch == "HEAD" {
+			continue
+		}
+		slug, known := m.ciSlugs[s.CWD]
+		if known && slug == "" {
+			continue // this directory has no CircleCI project
+		}
+		key := slug + "@" + s.Branch
+		if slug == "" {
+			key = s.CWD + "@" + s.Branch // slug not derived yet
+		} else if e, ok := m.ci[key]; ok && now.Sub(e.At) < ciTTL {
+			continue
+		}
+		if t, ok := m.ciPending[key]; ok && now.Sub(t) < ciTTL {
+			continue
+		}
+		m.ciPending[key] = now
+		targets = append(targets, ciTarget{CWD: s.CWD, Branch: s.Branch, Slug: slug})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	return fetchCICmd(m.ciToken, targets)
+}
+
+// ciStatus returns the CI column value for a session, or "" when unknown.
+func (m model) ciStatus(s Session) string {
+	slug := m.ciSlugs[s.CWD]
+	if slug == "" || s.Branch == "" {
+		return ""
+	}
+	return m.ci[slug+"@"+s.Branch].Status
+}
+
 // inputView renders the line editor sized to the space left of its label,
 // scrolling horizontally when the value outgrows it.
 func (m model) inputView(label string) string {
@@ -598,8 +671,19 @@ func (m model) helpView() string {
 		"    ?                  this help",
 		"    q                  quit",
 		"",
-		"  Commands (from config)",
 	}
+	if m.ciToken != "" {
+		lines = append(lines,
+			"  CI column (CircleCI)",
+			"    pass/fail/run/hold/cxl   the branch's latest pipeline, workflows combined",
+			"    -                        project is on CircleCI, branch has no pipelines",
+			"    blank                    no CircleCI project, fetch failed, or not fetched yet",
+			"    Fetched in the background for visible rows only, cached for 30s; the",
+			"    project slug comes from the git origin remote or [circleci.projects].",
+			"",
+		)
+	}
+	lines = append(lines, "  Commands (from config)")
 	keys := make([]string, 0, len(m.commands))
 	for k, tmpl := range m.commands {
 		if tmpl != "" {
@@ -628,13 +712,18 @@ func (m model) helpView() string {
 
 func (m model) renderRow(idx int) string {
 	s := m.sessions[idx]
-	line := fmt.Sprintf("%4d %-*s  %s  %s  %s  %s  %s",
+	ciCell := ""
+	if m.ciToken != "" {
+		ciCell = truncPad(m.ciStatus(s), colCI) + "  "
+	}
+	line := fmt.Sprintf("%4d %-*s  %s  %s  %s  %s  %s%s",
 		idx+1,
 		colState, string(s.State),
 		s.Modified.Format("Jan 02 15:04"),
 		truncPad(s.Project(), colProject),
 		truncPad(s.Branch, colBranch),
 		truncPad(s.Pane, colPane),
+		ciCell,
 		s.Subject(),
 	)
 	return trunc(line, m.width)

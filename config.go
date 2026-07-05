@@ -31,6 +31,37 @@ type Config struct {
 		Selected StyleConfig `toml:"selected"`
 	} `toml:"styles"`
 	Commands map[string]string `toml:"commands"`
+	CircleCI struct {
+		Token    string            `toml:"token"`
+		Projects map[string]string `toml:"projects"`
+	} `toml:"circleci"`
+}
+
+// ciToken returns the configured CircleCI token, falling back to the
+// conventional environment variables.
+func (c Config) ciToken() string {
+	if c.CircleCI.Token != "" {
+		return c.CircleCI.Token
+	}
+	if t := os.Getenv("CIRCLECI_TOKEN"); t != "" {
+		return t
+	}
+	return os.Getenv("CIRCLE_TOKEN")
+}
+
+// ciOverrides returns the per-directory slug overrides with ~ expanded.
+func (c Config) ciOverrides() map[string]string {
+	out := map[string]string{}
+	home, _ := os.UserHomeDir()
+	for dir, slug := range c.CircleCI.Projects {
+		if home != "" {
+			if rest, ok := strings.CutPrefix(dir, "~"); ok {
+				dir = home + rest
+			}
+		}
+		out[dir] = slug
+	}
+	return out
 }
 
 // StyleConfig describes one visual element of the UI.

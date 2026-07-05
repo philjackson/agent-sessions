@@ -78,6 +78,21 @@ Each UI element — `running`, `waiting`, `idle`, `dimmed`, `bar`, `selected`
 fg = "#af87ff"
 ```
 
+`[circleci]` enables a CI column showing the latest CircleCI status of each
+session's branch (`pass`, `fail`, `run`, `hold`, or `-` for no pipelines).
+Set `token` (or export `$CIRCLECI_TOKEN`/`$CIRCLE_TOKEN`); without a token
+the column is hidden. Statuses are fetched in the background for visible
+rows and cached for 30 seconds. The CircleCI project slug is derived from
+each project's git origin remote (`github.com/org/repo` → `gh/org/repo`);
+override it per directory when needed:
+
+```toml
+[circleci]
+token = ""
+[circleci.projects]
+"~/Projects/foo" = "gh/acme/foo"
+```
+
 `[commands]` binds keys to shell commands run on the selected session. Any
 Bubble Tea key name works — single characters, `enter`, or combos like
 `"ctrl+x"` (quoted). The command gets the terminal while it runs, so
@@ -97,12 +112,16 @@ survive word-splitting.
 | `{state}` | `running`/`waiting`/`idle` for live sessions, empty otherwise |
 | `{pid}` | the pid of the session's running `claude` process |
 | `{pane}` | the tmux pane hosting the session's `claude` process |
+| `{ci-build-url}` | the latest CircleCI build's page (needs `[circleci]`) |
 | `{project-picker}` | interactive: the project chosen from a selection screen |
 | `{text-input}` | interactive: a line of text typed into the status bar |
 
 `{pid}` and `{pane}` only apply to live sessions, and `{pane}` further
 requires the process to sit inside a tmux pane — commands using them show a
-status-bar notice instead of running when that doesn't hold. Appending `?`
+status-bar notice instead of running when that doesn't hold. Likewise
+`{ci-build-url}` needs the session's project to have a known CircleCI slug;
+it deep-links to the latest fetched workflow, falling back to the branch's
+pipelines page (e.g. `b = "xdg-open {ci-build-url}"`). Appending `?`
 makes them **optional**: `{pane?}` and `{pid?}` expand to an empty string
 instead, so a single command can branch. That's how the default `enter`
 jumps to a live session's pane but resumes a dead one:
