@@ -14,7 +14,9 @@ per session: index, state, last-modified time, project directory, git
 branch, the tmux pane hosting the session (as `session:window.pane`, for
 live sessions found in one), and a subject line (the session's AI-generated
 title, falling back to the first typed prompt). The list auto-refreshes
-every 2 seconds.
+every 2 seconds. The branch is whatever the session's directory is on right
+now (read from `.git/HEAD`, worktrees included), falling back to the
+transcript's last-recorded branch when the directory no longer exists.
 
 Each session's last assistant message — the thing Claude last said, e.g. the
 `Done!` ending a turn — is shown too. By default it appears as an indented
@@ -223,6 +225,30 @@ status-bar notice points there — that's the first place to look when a
 binding misbehaves. Commands run with the real terminal as their input, so
 they stay fully interactive; only their output is captured.
 
+## Helpers
+
+The [`helpers/`](helpers/) directory holds ready-made scripts to copy
+somewhere on your `PATH` (e.g. `~/.local/bin`) and adapt:
+
+- [`agent-sessions-focus`](helpers/agent-sessions-focus) — jump to the
+  tmux pane running the TUI from anywhere, starting it in a new window if
+  it isn't running. Made to hang off a tmux key binding; see the tip below.
+- [`new-claude`](helpers/new-claude) — a worked example of pushing command
+  logic into a script: given a project directory and an opening prompt
+  (e.g. `C = "new-claude {project-picker} {text-input:Prompt}"`), it
+  switches to a worktrunk (`wt`) worktree — offering to create one, and
+  reusing the branch if it already exists — then starts `claude` with the
+  prompt in a fresh tmux window via an interactive shell, so version
+  managers and per-directory environments apply.
+- [`linear-claude`](helpers/linear-claude) — the same worktree flow driven
+  by a Linear ticket (e.g.
+  `L = "linear-claude {project-picker} {text-input:Linear ticket}"`): it
+  fetches the ticket with the [linear
+  CLI](https://github.com/schpet/linear-cli) (authenticated via
+  `linear auth login`; also needs `jq`), names the worktree branch after
+  Linear's suggested branch name for the issue, and starts `claude`
+  prompted with the ticket's title, description, and URL to implement it.
+
 ## Tip: create a new Claude session from the TUI
 
 The shipped default binds `c` to pick a project, ask for the opening
@@ -253,28 +279,10 @@ shell — a prompt containing a literal `"` is the one thing it can't carry.
 ## Tip: a tmux key that jumps to agent-sessions
 
 To hop to the TUI from anywhere in tmux (starting it if it isn't running),
-save this as an executable script, e.g. `~/.local/bin/agent-sessions-focus`:
-
-```sh
-#!/bin/sh
-# Jump to the pane running agent-sessions, starting it if absent.
-pane=$(tmux list-panes -a -F '#{pane_id} #{pane_current_command}' \
-    | awk '$2 == "agent-sessions" {print $1; exit}')
-if [ -n "$pane" ]; then
-    tmux select-window -t "$pane"
-    tmux select-pane -t "$pane"
-    tmux switch-client -t "$pane"
-else
-    # Start via the window's interactive shell so the TUI (and every
-    # command it runs) gets the full user environment, not the tmux
-    # server's.
-    win=$(tmux new-window -P -F '#{pane_id}' -n sessions)
-    tmux send-keys -t "$win" 'exec agent-sessions' Enter
-fi
-```
-
-and bind it in `~/.tmux.conf` (`prefix S`, or use `bind-key -n M-s` for a
-prefix-less key):
+copy [`helpers/agent-sessions-focus`](helpers/agent-sessions-focus) to
+somewhere on your `PATH`, e.g. `~/.local/bin`, and bind it in
+`~/.tmux.conf` (`prefix S`, or use `bind-key -n M-s` for a prefix-less
+key):
 
 ```tmux
 bind-key S run-shell ~/.local/bin/agent-sessions-focus
