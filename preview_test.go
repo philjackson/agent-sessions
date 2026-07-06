@@ -11,6 +11,7 @@ func testModel(mode previewMode, sessions []Session) model {
 		previewMode:   mode,
 		previewRecent: 5,
 		previewWithin: 20 * time.Minute,
+		showWords:     true,
 		sessions:      sessions,
 		width:         160,
 		height:        40, // tall enough to show every row
@@ -120,5 +121,144 @@ func TestRealDataRenders(t *testing.T) {
 	out := m.View()
 	if !strings.Contains(out, "↳ ") {
 		t.Errorf("expected at least one preview line from real data")
+	}
+}
+
+func TestTmuxGlyph(t *testing.T) {
+	now := time.Now()
+	sessions := []Session{
+		{ID: "a", Title: "attached", LastMsg: "hi", Modified: now, PID: 100, Pane: "%27"},
+		{ID: "b", Title: "loose", LastMsg: "hi", Modified: now, PID: 200}, // live, no pane
+		{ID: "c", Title: "dead", LastMsg: "hi", Modified: now},            // not live
+	}
+	m := testModel(previewColumn, sessions) // column mode: one line per session
+	m.tmuxGlyph = "⊟"
+	out := m.View()
+	if !strings.Contains(out, "⊟") {
+		t.Errorf("attachable session should show the glyph, got:\n%s", out)
+	}
+	// A live-but-loose session and a dead one must not be marked.
+	if strings.Count(out, "⊟") != 1 {
+		t.Errorf("exactly one session should be marked, got %d:\n%s", strings.Count(out, "⊟"), out)
+	}
+	// Rows stay column-aligned: the blank slot is the glyph's display width.
+	if got := m.tmuxCell(sessions[1]); got != "   " { // "  " + one space
+		t.Errorf("loose session cell = %q, want three spaces", got)
+	}
+}
+
+func TestTmuxGlyphDisabled(t *testing.T) {
+	now := time.Now()
+	sessions := []Session{{ID: "a", Title: "x", Modified: now, PID: 100, Pane: "%1"}}
+	m := testModel(previewColumn, sessions)
+	m.tmuxGlyph = ""
+	if got := m.tmuxCell(sessions[0]); got != "" {
+		t.Errorf("disabled glyph should yield no slot, got %q", got)
+	}
+}
+
+func glyphModel() model {
+	m := model{
+		glyphs: map[marker]string{
+			markerRunning: spinnerSentinel,
+			markerWaiting: "!",
+			markerIdle:    "·",
+			markerUnread:  "●",
+			markerOffline: " ",
+		},
+		showWords: true,
+		unread:    map[string]bool{},
+		seen:      map[string]SessionState{},
+		width:     160,
+		height:    40,
+	}
+	m.colGlyph = glyphWidth(m.glyphs)
+	return m
+}
+
+func TestIconOnlyMode(t *testing.T) {
+	m := glyphModel()
+	m.sessions = []Session{{ID: "a", Title: "x", PID: 1, State: StateIdle, Modified: time.Now()}}
+
+	withWords := m.View()
+	if !strings.Contains(withWords, "idle") {
+		t.Fatalf("expected state word with showWords=true, got:\n%s", withWords)
+	}
+
+	m.showWords = false
+	iconOnly := m.View()
+	if strings.Contains(iconOnly, "idle") {
+		t.Errorf("state word should be hidden with showWords=false, got:\n%s", iconOnly)
+	}
+	// The glyph still shows.
+	if !strings.Contains(iconOnly, "·") {
+		t.Errorf("glyph should still render in icon-only mode, got:\n%s", iconOnly)
+	}
+}
+
+func TestDetectUnreadTransition(t *testing.T) {
+	m := glyphModel()
+	// First observation: running.
+	m.detectUnread([]Session{{ID: "x", PID: 1, State: StateRunning}})
+	if m.unread["x"] {
+		t.Fatal("running session should not be unread")
+	}
+	// Turn finishes -> idle: now unread.
+	m.detectUnread([]Session{{ID: "x", PID: 1, State: StateIdle}})
+	if !m.unread["x"] {
+		t.Fatal("running->idle should mark unread")
+	}
+	// A fresh turn clears it.
+	m.detectUnread([]Session{{ID: "x", PID: 1, State: StateRunning}})
+	if m.unread["x"] {
+		t.Fatal("new turn should clear unread")
+	}
+}
+
+func TestUnreadNeedsPriorRunning(t *testing.T) {
+	m := glyphModel()
+	// A session first seen as idle (we never saw it run) is not unread.
+	m.detectUnread([]Session{{ID: "y", PID: 1, State: StateIdle}})
+	if m.unread["y"] {
+		t.Fatal("idle without a prior running observation should not be unread")
+	}
+}
+
+func TestUnreadDroppedWhenGone(t *testing.T) {
+	m := glyphModel()
+	m.detectUnread([]Session{{ID: "z", PID: 1, State: StateRunning}})
+	m.detectUnread([]Session{{ID: "z", PID: 1, State: StateIdle}})
+	m.detectUnread(nil) // session disappeared
+	if m.unread["z"] {
+		t.Fatal("vanished session should be forgotten")
+	}
+}
+
+func TestMarkerAndGlyphRender(t *testing.T) {
+	m := glyphModel()
+	m.sessions = []Session{
+		{ID: "u", Title: "finished", PID: 1, State: StateIdle, Modified: time.Now()},
+	}
+	m.unread["u"] = true
+	if got := m.markerFor(m.sessions[0]); got != markerUnread {
+		t.Fatalf("unread idle session marker = %v, want markerUnread", got)
+	}
+	out := m.View()
+	if !strings.Contains(out, "●") {
+		t.Errorf("unread glyph ● should render, got:\n%s", out)
+	}
+}
+
+func TestSpinnerFrameAdvances(t *testing.T) {
+	m := glyphModel()
+	m.sessions = []Session{{ID: "r", PID: 1, State: StateRunning, Modified: time.Now()}}
+	a := m.statusCell(markerRunning)
+	m.spin++
+	b := m.statusCell(markerRunning)
+	if a == b {
+		t.Errorf("spinner frame should change with m.spin: %q == %q", a, b)
+	}
+	if !m.anyRunning() {
+		t.Error("anyRunning should be true with a running session")
 	}
 }

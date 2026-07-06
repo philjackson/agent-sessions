@@ -27,6 +27,8 @@ type Config struct {
 		Running  StyleConfig `toml:"running"`
 		Waiting  StyleConfig `toml:"waiting"`
 		Idle     StyleConfig `toml:"idle"`
+		Unread   StyleConfig `toml:"unread"`
+		Offline  StyleConfig `toml:"offline"`
 		Dimmed   StyleConfig `toml:"dimmed"`
 		Bar      StyleConfig `toml:"bar"`
 		Selected StyleConfig `toml:"selected"`
@@ -37,11 +39,22 @@ type Config struct {
 		Token    string            `toml:"token"`
 		Projects map[string]string `toml:"projects"`
 	} `toml:"circleci"`
+	Status struct {
+		Running string `toml:"running"` // "spinner" animates; else a literal glyph
+		Waiting string `toml:"waiting"`
+		Idle    string `toml:"idle"`
+		Unread  string `toml:"unread"`
+		Offline string `toml:"offline"`
+		Words   bool   `toml:"words"` // show the state word next to the glyph
+	} `toml:"status"`
 	Preview struct {
 		Mode   string `toml:"mode"`   // "row", "column", or "off"
 		Recent int    `toml:"recent"` // max recent sessions to always preview
 		Within string `toml:"within"` // recency window, a Go duration string
 	} `toml:"preview"`
+	Tmux struct {
+		Glyph string `toml:"glyph"` // marker on tmux-attachable sessions; "" hides it
+	} `toml:"tmux"`
 }
 
 // ciToken returns the configured CircleCI token, falling back to the

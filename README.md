@@ -22,11 +22,26 @@ detail line beneath the session, for the selected session and for the most
 recently active ones, so recent answers stay on screen. See `[preview]` under
 Configuration to change this to an inline column or turn it off.
 
-Sessions with a running `claude` process show a state:
+Each row opens with a coloured status marker (a Nerd Font glyph by default),
+so live sessions stand out at a glance:
 
-- `running` — Claude's turn is in progress
+- `running` — Claude's turn is in progress; an animated spinner in a bright
+  colour
 - `waiting` — blocked on the user, e.g. a permission prompt
 - `idle` — waiting for the next prompt
+- **unread** — a session that finished a turn (went `running` → `idle`) while
+  you were watching but that you haven't opened yet, in a bright "attention"
+  colour (orange by default). This is what tells apart the session that *just*
+  said `Done!` from every other long-idle one. The marker clears when you open
+  the session with `Enter`. It's tracked in-memory, so it only covers turns
+  that finish while agent-sessions is running, and resets when you quit.
+
+The markers and their colours are configurable — Nerd Font icons, emoji, or
+plain dots — see `[status]` and the `[styles.*]` sections under Configuration.
+
+Live sessions running inside a tmux pane — the ones the default `Enter`
+command can jump to — are additionally marked with a `⊟` glyph (configurable
+via `[tmux]`), so you can see which are attachable without pressing `Enter`.
 
 State comes from `~/.claude/sessions/<pid>.json`, a registry each running
 Claude Code instance maintains (status `busy`/`waiting`/`idle` plus the exact
@@ -75,9 +90,10 @@ default file — [`config.default.toml`](config.default.toml), embedded in
 the binary at build time — is written there. Omitted keys keep their
 defaults.
 
-Each UI element — `running`, `waiting`, `idle`, `dimmed`, `bar`, `selected`,
-`preview` — is a `[styles.*]` section accepting `fg`/`bg` (ANSI/256 number or
-`#rrggbb` hex) and `bold`/`faint`/`reverse` booleans:
+Each UI element — `running`, `waiting`, `idle`, `unread`, `offline`,
+`dimmed`, `bar`, `selected`, `preview` — is a `[styles.*]` section accepting
+`fg`/`bg` (ANSI/256 number or `#rrggbb` hex) and `bold`/`faint`/`reverse`
+booleans:
 
 ```toml
 [styles.running]
@@ -99,6 +115,21 @@ token = ""
 "~/Projects/foo" = "gh/acme/foo"
 ```
 
+The `[status]` section sets the per-status marker glyphs. Defaults are Nerd
+Font icons; swap them for plain dots or emoji if your terminal lacks a Nerd
+Font. `running = "spinner"` animates a braille spinner instead of a static
+glyph:
+
+```toml
+[status]
+running = "spinner"    # or a glyph, e.g. "●" / "🟢"
+waiting = "●"          # "🟡" or "󰭙"
+idle    = "·"          # "⚪"
+unread  = "●"          # "🟠" — shown in the [styles.unread] colour
+offline = " "          # non-live sessions
+words   = true         # set false for a compact, icon-only column
+```
+
 The `[preview]` section controls the last-message display:
 
 ```toml
@@ -111,6 +142,13 @@ within = "20m"    # ...that were modified within this window (a Go duration)
 The selected session is always previewed. `recent`/`within` only apply in
 `row` mode; `column` mode shows every session's message inline (capping the
 subject to make room), and `off` hides it.
+
+The `[tmux]` section sets the marker shown on tmux-attachable sessions:
+
+```toml
+[tmux]
+glyph = "⊟"   # set to "" to hide the marker
+```
 
 `[commands]` binds keys to shell commands run on the selected session. Any
 Bubble Tea key name works — single characters, `enter`, or combos like
