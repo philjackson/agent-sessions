@@ -127,6 +127,41 @@ const (
 	tailScanBytes = 64 * 1024
 )
 
+// currentBranch reads the branch a working directory is on straight from
+// .git/HEAD, without spawning git. Returns "" when cwd isn't a git repo
+// (or no longer exists) and "HEAD" when detached.
+func currentBranch(cwd string) string {
+	gitPath := filepath.Join(cwd, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return ""
+	}
+	dir := gitPath
+	if !fi.IsDir() { // a worktree: .git is a file pointing at the real dir
+		data, err := os.ReadFile(gitPath)
+		if err != nil {
+			return ""
+		}
+		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+		rest, ok := strings.CutPrefix(line, "gitdir: ")
+		if !ok {
+			return ""
+		}
+		if !filepath.IsAbs(rest) {
+			rest = filepath.Join(cwd, rest)
+		}
+		dir = rest
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "HEAD"))
+	if err != nil {
+		return ""
+	}
+	if ref, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "ref: refs/heads/"); ok {
+		return ref
+	}
+	return "HEAD" // detached
+}
+
 // claudeDir returns the path of a directory under ~/.claude.
 func claudeDir(elem ...string) (string, error) {
 	home, err := os.UserHomeDir()
@@ -160,6 +195,7 @@ func (ld *loader) Load() ([]Session, error) {
 
 	var sessions []Session
 	fresh := make(map[string]Session, len(ld.cache))
+	branches := map[string]string{} // live branch per cwd, this pass
 	for _, pd := range projectDirs {
 		if !pd.IsDir() {
 			continue
@@ -189,6 +225,18 @@ func (ld *loader) Load() ([]Session, error) {
 				parseTranscript(&s)
 			}
 			fresh[path] = s
+			// The transcript's branch is only as fresh as the session's
+			// last activity; prefer what the directory is on right now.
+			if s.CWD != "" {
+				b, ok := branches[s.CWD]
+				if !ok {
+					b = currentBranch(s.CWD)
+					branches[s.CWD] = b
+				}
+				if b != "" {
+					s.Branch = b
+				}
+			}
 			sessions = append(sessions, s)
 		}
 	}
