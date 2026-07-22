@@ -167,7 +167,7 @@ func newModel(cfg Config) model {
 		markerOffline: cfg.Status.Offline,
 	}
 	return model{
-		loader:        newLoader(),
+		loader:        newLoader(cfg.SortDims()),
 		styles:        newStyles(cfg),
 		commands:      cfg.Commands,
 		tmuxGlyph:     cfg.Tmux.Glyph,
