@@ -19,13 +19,11 @@ session's directory is on right now (read from `.git/HEAD`, worktrees
 included), falling back to the transcript's last-recorded branch when the
 directory no longer exists.
 
-Live sessions (a running claude process) float to the top; the rest follow
-by the timestamp of each transcript's last real entry, not the file's
-modification time. Claude Code rewrites a transcript's mtime for content-free
-changes too — a mode or permission-mode toggle, for instance — which would
-otherwise float an untouched session to the top; keying off the last
-timestamped entry keeps that from happening. Sessions with no timestamped
-entries at all (bare mode-only stubs) sort to the bottom.
+Live sessions (a running claude process) float to the top; the rest follow by
+the timestamp of each transcript's last real entry, not the file's mtime —
+Claude Code bumps the mtime for content-free changes (a mode toggle, say) that
+shouldn't count as activity. Sessions with no timestamped entries at all (bare
+mode-only stubs) sort to the bottom.
 
 Each session's last assistant message — the thing Claude last said, e.g. the
 `Done!` ending a turn — is shown too. By default it appears as an indented
@@ -133,6 +131,25 @@ token = ""
 [circleci.projects]
 "~/Projects/foo" = "gh/acme/foo"
 ```
+
+The `[sort]` section chooses the index order — a comma-separated list of
+dimensions, most significant first. Recency (newest activity) is always the
+final tie-breaker, and live sessions are always floated to the top of it. Two
+dimensions exist: `active` puts live sessions (a running claude process) ahead
+of the rest, and `repo` clusters every session of a git repo — across all its
+worktrees — into one block. Their order is what matters:
+
+```toml
+[sort]
+group = "active"        # default: newest first, live floated to the top
+# group = "repo"        # whole repos together, live-first inside each block
+# group = "active,repo" # every live session first, grouped by repo, then the rest
+```
+
+Reach for `active,repo` when one busy repo has a large backlog of finished
+sessions: plain `repo` lets that backlog push another repo's live session down
+the list, whereas `active,repo` keeps every live session up top (still grouped
+by repo).
 
 The `[status]` section sets the per-status marker glyphs. Defaults are Nerd
 Font icons; swap them for plain dots or emoji if your terminal lacks a Nerd

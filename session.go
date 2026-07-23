@@ -38,6 +38,7 @@ type Session struct {
 	File     string
 	CWD      string
 	Branch   string
+	Repo     string // git common dir shared by a repo's worktrees; "" if none
 	Slug     string
 	Title    string
 	LastMsg  string    // most recent assistant text, collapsed to one line
@@ -139,51 +140,40 @@ const (
 	tailScanBytes = 64 * 1024
 )
 
-// currentBranch reads the branch a working directory is on straight from
-// .git/HEAD, without spawning git. Returns "" when cwd isn't a git repo
-// (or no longer exists) and "HEAD" when detached.
-func currentBranch(cwd string) string {
+// gitInfo is what Load caches per cwd: the branch a working directory is on and
+// whether it's a linked worktree, both learned from a single stat of .git.
+type gitInfo struct {
+	branch   string
+	worktree bool
+}
+
+// gitState reads, in a single stat of cwd/.git, what Load needs about a working
+// directory. branch reads straight from .git/HEAD without spawning git: "" when
+// cwd isn't a git repo (or no longer exists), "HEAD" when detached. worktree is
+// true once .git is a pointer file, even if the branch can't be resolved.
+func gitState(cwd string) gitInfo {
 	gitPath := filepath.Join(cwd, ".git")
 	fi, err := os.Stat(gitPath)
 	if err != nil {
-		return ""
+		return gitInfo{}
 	}
 	dir := gitPath
+	worktree := false
 	if !fi.IsDir() { // a worktree: .git is a file pointing at the real dir
-		data, err := os.ReadFile(gitPath)
-		if err != nil {
-			return ""
+		worktree = true
+		dir = worktreeGitDir(cwd, gitPath)
+		if dir == "" {
+			return gitInfo{worktree: true}
 		}
-		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
-		rest, ok := strings.CutPrefix(line, "gitdir: ")
-		if !ok {
-			return ""
-		}
-		if !filepath.IsAbs(rest) {
-			rest = filepath.Join(cwd, rest)
-		}
-		dir = rest
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "HEAD"))
 	if err != nil {
-		return ""
+		return gitInfo{worktree: worktree}
 	}
 	if ref, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "ref: refs/heads/"); ok {
-		return ref
+		return gitInfo{branch: ref, worktree: worktree}
 	}
-	return "HEAD" // detached
-}
-
-// isWorktree reports whether cwd is a git worktree (not the main repository).
-func isWorktree(cwd string) bool {
-	if cwd == "" {
-		return false
-	}
-	fi, err := os.Stat(filepath.Join(cwd, ".git"))
-	if err != nil {
-		return false
-	}
-	return !fi.IsDir()
+	return gitInfo{branch: "HEAD", worktree: worktree} // detached
 }
 
 // claudeDir returns the path of a directory under ~/.claude.
@@ -198,11 +188,13 @@ func claudeDir(elem ...string) (string, error) {
 // loader loads sessions, caching parsed transcript metadata between calls so
 // the periodic refresh only re-parses files that actually changed.
 type loader struct {
-	cache map[string]Session // by path; entries hold no live state
+	cache    map[string]Session // by path; entries hold no live state
+	repoKeys map[string]string  // cwd -> repo key, resolved from disk once per process
+	sortDims []sortDim          // index ordering, most significant first
 }
 
-func newLoader() *loader {
-	return &loader{cache: map[string]Session{}}
+func newLoader(sortDims []sortDim) *loader {
+	return &loader{cache: map[string]Session{}, repoKeys: map[string]string{}, sortDims: sortDims}
 }
 
 // Load scans ~/.claude/projects for session transcripts, newest first, with
@@ -219,7 +211,7 @@ func (ld *loader) Load() ([]Session, error) {
 
 	var sessions []Session
 	fresh := make(map[string]Session, len(ld.cache))
-	branches := map[string]string{} // live branch per cwd, this pass
+	gitByCWD := map[string]gitInfo{} // branch + worktree per cwd, this pass
 	for _, pd := range projectDirs {
 		if !pd.IsDir() {
 			continue
@@ -252,38 +244,218 @@ func (ld *loader) Load() ([]Session, error) {
 			// The transcript's branch is only as fresh as the session's
 			// last activity; prefer what the directory is on right now.
 			if s.CWD != "" {
-				b, ok := branches[s.CWD]
+				g, ok := gitByCWD[s.CWD]
 				if !ok {
-					b = currentBranch(s.CWD)
-					branches[s.CWD] = b
+					g = gitState(s.CWD)
+					gitByCWD[s.CWD] = g
 				}
-				if b != "" {
-					s.Branch = b
+				if g.branch != "" {
+					s.Branch = g.branch
 				}
+				s.Worktree = g.worktree
 			}
-			s.Worktree = isWorktree(s.CWD)
 			sessions = append(sessions, s)
 		}
 	}
 	ld.cache = fresh // also drops entries for deleted files
 
-	// Float live sessions (a running claude process) to the top, then order by
-	// last real activity, newest first. Sessions with no timestamped entries
-	// (e.g. mode-only stubs) have a zero Activity and sink to the bottom; mtime
-	// only breaks ties among them. markLive runs first so Live() is set while
-	// sorting.
 	markLive(sessions)
-	sort.Slice(sessions, func(i, j int) bool {
-		if la, lb := sessions[i].Live(), sessions[j].Live(); la != lb {
-			return la
-		}
-		a, b := sessions[i].Activity, sessions[j].Activity
-		if !a.Equal(b) {
-			return a.After(b)
-		}
-		return sessions[i].Modified.After(sessions[j].Modified)
-	})
+	for i := range sessions {
+		sessions[i].Repo = repoKeyCached(sessions[i].CWD, ld.repoKeys)
+	}
+	sortSessions(sessions, ld.sortDims)
 	return sessions, nil
+}
+
+// sortDim is one dimension of the index ordering. Dimensions are applied in
+// configured order (most significant first), with recency as the final key.
+type sortDim int
+
+const (
+	dimActive sortDim = iota // live sessions (a claude process) ahead of the rest
+	dimRepo                  // cluster sessions of one git repo (across worktrees)
+)
+
+// sortDimNames maps the recognised [sort] group tokens to their dimension.
+var sortDimNames = map[string]sortDim{
+	"active": dimActive,
+	"repo":   dimRepo,
+}
+
+// parseSortDims reads the [sort] group setting: a comma-separated, ordered list
+// of dimension names (see sortDimNames), most significant first. Blank,
+// unrecognised, and duplicate tokens are dropped; an empty result means plain
+// recency order.
+func parseSortDims(group string) []sortDim {
+	var dims []sortDim
+	seen := map[sortDim]bool{}
+	for _, tok := range strings.Split(group, ",") {
+		d, ok := sortDimNames[strings.TrimSpace(strings.ToLower(tok))]
+		if !ok || seen[d] {
+			continue
+		}
+		dims = append(dims, d)
+		seen[d] = true
+	}
+	return dims
+}
+
+// byRecency orders two sessions newest-first: live ahead of the rest, then by
+// last real activity, with mtime breaking ties among stubs that have none.
+func byRecency(a, b *Session) bool {
+	if la, lb := a.Live(), b.Live(); la != lb {
+		return la
+	}
+	if !a.Activity.Equal(b.Activity) {
+		return a.Activity.After(b.Activity)
+	}
+	return a.Modified.After(b.Modified)
+}
+
+// rankRepos assigns each repo a sort position: repos holding a live session
+// first, then by their most recent activity, with the key breaking ties so the
+// order is stable across loads.
+func rankRepos(sessions []Session) map[string]int {
+	type agg struct {
+		hasLive bool
+		newest  time.Time
+	}
+	m := map[string]*agg{}
+	for i := range sessions {
+		s := &sessions[i]
+		a := m[s.Repo]
+		if a == nil {
+			a = &agg{}
+			m[s.Repo] = a
+		}
+		a.hasLive = a.hasLive || s.Live()
+		if w := s.When(); w.After(a.newest) {
+			a.newest = w
+		}
+	}
+	repos := make([]string, 0, len(m))
+	for r := range m {
+		repos = append(repos, r)
+	}
+	sort.Slice(repos, func(i, j int) bool {
+		ai, aj := m[repos[i]], m[repos[j]]
+		if ai.hasLive != aj.hasLive {
+			return ai.hasLive
+		}
+		if !ai.newest.Equal(aj.newest) {
+			return ai.newest.After(aj.newest)
+		}
+		return repos[i] < repos[j]
+	})
+	rank := make(map[string]int, len(repos))
+	for i, r := range repos {
+		rank[r] = i
+	}
+	return rank
+}
+
+// sortSessions orders the index by the configured dimensions (most significant
+// first), falling back to recency. dimActive floats live sessions to the top;
+// dimRepo clusters each repo's sessions (across worktrees). Their order sets
+// precedence: "active,repo" groups by repo only within the live block; "repo"
+// keeps whole repos together, live-first inside each.
+func sortSessions(sessions []Session, dims []sortDim) {
+	var repoRank map[string]int
+	for _, d := range dims {
+		if d == dimRepo {
+			repoRank = rankRepos(sessions)
+			break
+		}
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		si, sj := &sessions[i], &sessions[j]
+		for _, d := range dims {
+			switch d {
+			case dimActive:
+				if la, lb := si.Live(), sj.Live(); la != lb {
+					return la
+				}
+			case dimRepo:
+				if si.Repo != sj.Repo {
+					return repoRank[si.Repo] < repoRank[sj.Repo]
+				}
+			}
+		}
+		return byRecency(si, sj)
+	})
+}
+
+// repoKeyCached resolves cwd to its repo key, memoising in cache so a directory
+// is walked only once for the process lifetime: a session's cwd never moves and
+// its repo membership is treated as stable across refreshes.
+func repoKeyCached(cwd string, cache map[string]string) string {
+	if cwd == "" {
+		return ""
+	}
+	if k, ok := cache[cwd]; ok {
+		return k
+	}
+	k := repoKey(cwd)
+	cache[cwd] = k
+	return k
+}
+
+// repoKey returns a stable identifier for the git repository containing cwd,
+// shared by all of that repo's worktrees, or "" if cwd is not in a repo. The
+// key is the repo's common git dir, which every linked worktree points back to.
+func repoKey(cwd string) string {
+	dir := cwd
+	for {
+		gitPath := filepath.Join(dir, ".git")
+		if fi, err := os.Stat(gitPath); err == nil {
+			if fi.IsDir() {
+				return filepath.Clean(gitPath) // the main worktree; itself the common dir
+			}
+			return commonGitDir(dir, gitPath) // a linked worktree (or submodule)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "" // reached the filesystem root without finding .git
+		}
+		dir = parent
+	}
+}
+
+// worktreeGitDir resolves a linked worktree's ".git" pointer file to the gitdir
+// it names, re-anchoring a relative path against base. Returns "" if the file
+// can't be read or holds no "gitdir:" line.
+func worktreeGitDir(base, gitFile string) string {
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return ""
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+	gitdir, ok := strings.CutPrefix(line, "gitdir: ")
+	if !ok {
+		return ""
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(base, gitdir)
+	}
+	return gitdir
+}
+
+// commonGitDir follows a ".git" file (as used by linked worktrees) to the
+// repository's shared common dir, so sibling worktrees resolve to one key.
+func commonGitDir(base, gitFile string) string {
+	gitdir := worktreeGitDir(base, gitFile)
+	if gitdir == "" {
+		return ""
+	}
+	// A worktree's gitdir holds a "commondir" pointing at the shared .git.
+	if cd, err := os.ReadFile(filepath.Join(gitdir, "commondir")); err == nil {
+		common := strings.TrimSpace(string(cd))
+		if !filepath.IsAbs(common) {
+			common = filepath.Join(gitdir, common)
+		}
+		return filepath.Clean(common)
+	}
+	return filepath.Clean(gitdir)
 }
 
 // parseTranscript fills metadata by scanning the head of the file (for the

@@ -53,6 +53,20 @@ token = ""
 [styles.preview]  # the last-message text shown per session
 faint = true
 
+[sort]
+# How to order the index: a comma-separated list of dimensions, most
+# significant first. Recency (newest activity) is always the final tie-breaker,
+# with live sessions floated to the top of it; blank or unrecognised gives that
+# plain order. Two dimensions exist:
+#   active   live sessions (a running claude process) ahead of the rest.
+#   repo     cluster every session of a git repo (across all its worktrees).
+# Their order is what matters:
+#   "active"       (default) newest first, live at the top.
+#   "repo"         whole repos stay together, live-first inside each block.
+#   "active,repo"  every live session first (grouped by repo), then the rest —
+#                  so a busy repo's backlog never buries another repo's live work.
+group = "active"
+
 [status]
 # Marker shown at the start of each row for its status. Defaults are Nerd
 # Font icons (need a Nerd Font in your terminal). For a plain terminal use
