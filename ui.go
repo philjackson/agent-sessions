@@ -52,22 +52,26 @@ var colState = func() int {
 // styles are the configured looks of each UI element.
 type styles struct {
 	bar      lipgloss.Style
+	prompt   lipgloss.Style
 	selected lipgloss.Style
 	dim      lipgloss.Style
 	preview  lipgloss.Style
 	unread   lipgloss.Style
 	offline  lipgloss.Style
+	worktree lipgloss.Style
 	state    map[SessionState]lipgloss.Style
 }
 
 func newStyles(cfg Config) styles {
 	return styles{
 		bar:      cfg.Styles.Bar.style(),
+		prompt:   cfg.Styles.Prompt.style(),
 		selected: cfg.Styles.Selected.style(),
 		dim:      cfg.Styles.Dimmed.style(),
 		preview:  cfg.Styles.Preview.style(),
 		unread:   cfg.Styles.Unread.style(),
 		offline:  cfg.Styles.Offline.style(),
+		worktree: cfg.Styles.Worktree.style(),
 		state: map[SessionState]lipgloss.Style{
 			StateRunning: cfg.Styles.Running.style(),
 			StateWaiting: cfg.Styles.Waiting.style(),
@@ -142,9 +146,10 @@ type model struct {
 	offset        int
 	width         int
 	height        int
-	loading       bool // a Load is in flight; don't start another
-	status        string
+	loading       bool   // a Load is in flight; don't start another
+	status        string // shown instead of status until the next keypress
 	notice        string // shown instead of status until the next keypress
+	worktreeGlyph string // marker for worktree projects; "" hides it
 }
 
 func newModel(cfg Config) model {
@@ -166,6 +171,7 @@ func newModel(cfg Config) model {
 		styles:        newStyles(cfg),
 		commands:      cfg.Commands,
 		tmuxGlyph:     cfg.Tmux.Glyph,
+		worktreeGlyph: cfg.Worktree.Glyph,
 		glyphs:        glyphs,
 		colGlyph:      glyphWidth(glyphs),
 		showWords:     cfg.Status.Words,
@@ -1003,7 +1009,11 @@ func (m model) View() string {
 	if m.deleting != nil {
 		status = fmt.Sprintf("Delete %q? (y/n)", m.deleting.Subject())
 	}
-	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
+	bottomStyle := m.styles.bar
+	if m.searching || m.prompt.active {
+		bottomStyle = m.styles.prompt
+	}
+	b.WriteString(bottomStyle.Render(pad(status, m.width)))
 	return b.String()
 }
 
@@ -1028,7 +1038,7 @@ func (m model) pickerView() string {
 	}
 	status := fmt.Sprintf("---%s: %s---(%d/%d, Enter:Pick Esc:Cancel)",
 		p.title, m.inputView(p.title+": "), len(p.items), len(p.all))
-	b.WriteString(m.styles.bar.Render(pad(status, m.width)))
+	b.WriteString(m.styles.prompt.Render(pad(status, m.width)))
 	return b.String()
 }
 
@@ -1148,13 +1158,14 @@ func (m model) renderRow(idx int, plain bool) string {
 			tail = "  " + s.LastMsg
 		}
 	}
-	line := fmt.Sprintf("%4d %s%s%s  %s  %s  %s  %s  %s%s%s",
+	line := fmt.Sprintf("%4d %s%s%s  %s  %s  %s  %s  %s  %s%s%s",
 		idx+1,
 		glyph,
 		word,
 		m.tmuxCell(s),
 		s.When().Format("Jan 02 15:04"),
 		truncPad(s.Project(), colProject),
+		m.worktreeCell(s, plain),
 		truncPad(s.Branch, colBranch),
 		truncPad(s.Pane, colPane),
 		ciCell,
@@ -1219,6 +1230,23 @@ func (m model) tmuxCell(s Session) string {
 		return "  " + m.tmuxGlyph
 	}
 	return "  " + strings.Repeat(" ", lipgloss.Width(m.tmuxGlyph))
+}
+
+// worktreeCell is the fixed-width worktree marker slot, holding the styled
+// glyph for worktree projects and blank otherwise. It is empty (no slot at
+// all) when the marker is disabled. When plain is true (selected/stale rows),
+// the glyph is unstyled so the outer row style isn't interrupted.
+func (m model) worktreeCell(s Session, plain bool) string {
+	if m.worktreeGlyph == "" {
+		return ""
+	}
+	if s.Worktree {
+		if plain {
+			return "  " + m.worktreeGlyph
+		}
+		return "  " + m.styles.worktree.Render(m.worktreeGlyph)
+	}
+	return "  " + strings.Repeat(" ", lipgloss.Width(m.worktreeGlyph))
 }
 
 // previewLine is the indented detail line shown beneath a session in "row"

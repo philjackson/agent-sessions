@@ -29,6 +29,13 @@ faint = true
 [styles.bar]       # the help and status bars
 reverse = true
 
+[styles.prompt]    # the bottom bar during search, text prompts, and pickers
+bg = "17"
+
+[styles.worktree]  # marker shown next to worktree projects
+fg = "3"
+bold = true
+
 [styles.selected]  # the cursor row
 reverse = true
 
@@ -67,6 +74,11 @@ words = true
 mode = "column"
 recent = 5      # in row mode, always preview this many recent sessions...
 within = "20m"  # ...modified within this window (a Go duration)
+
+[worktree]
+# Marker shown next to projects that are git worktrees (not the main repo).
+# Set to "" to hide it.
+glyph = "wt"
 
 [tmux]
 # Marker shown next to live sessions running inside a tmux pane, i.e. the

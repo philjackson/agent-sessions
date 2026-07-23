@@ -47,6 +47,7 @@ type Session struct {
 	State    SessionState // empty unless Live
 	PID      int          // the running claude process; 0 unless Live
 	Pane     string       // session:window.pane hosting the process, if any
+	Worktree bool         // true if CWD is a git worktree (not the main repo)
 }
 
 // When is the time shown for the session: its last real activity, falling
@@ -173,6 +174,18 @@ func currentBranch(cwd string) string {
 	return "HEAD" // detached
 }
 
+// isWorktree reports whether cwd is a git worktree (not the main repository).
+func isWorktree(cwd string) bool {
+	if cwd == "" {
+		return false
+	}
+	fi, err := os.Stat(filepath.Join(cwd, ".git"))
+	if err != nil {
+		return false
+	}
+	return !fi.IsDir()
+}
+
 // claudeDir returns the path of a directory under ~/.claude.
 func claudeDir(elem ...string) (string, error) {
 	home, err := os.UserHomeDir()
@@ -248,6 +261,7 @@ func (ld *loader) Load() ([]Session, error) {
 					s.Branch = b
 				}
 			}
+			s.Worktree = isWorktree(s.CWD)
 			sessions = append(sessions, s)
 		}
 	}

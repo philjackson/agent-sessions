@@ -31,10 +31,15 @@ type Config struct {
 		Offline  StyleConfig `toml:"offline"`
 		Dimmed   StyleConfig `toml:"dimmed"`
 		Bar      StyleConfig `toml:"bar"`
+		Prompt   StyleConfig `toml:"prompt"`
 		Selected StyleConfig `toml:"selected"`
 		Preview  StyleConfig `toml:"preview"`
+		Worktree StyleConfig `toml:"worktree"`
 	} `toml:"styles"`
 	Commands map[string]string `toml:"commands"`
+	Worktree struct {
+		Glyph string `toml:"glyph"` // marker on worktree projects; "" hides it
+	} `toml:"worktree"`
 	CircleCI struct {
 		Token    string            `toml:"token"`
 		Projects map[string]string `toml:"projects"`
