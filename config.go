@@ -61,7 +61,7 @@ type Config struct {
 		Glyph string `toml:"glyph"` // marker on tmux-attachable sessions; "" hides it
 	} `toml:"tmux"`
 	Sort struct {
-		Group string `toml:"group"` // "activity" (default) or "repo"
+		Group string `toml:"group"` // "active" (default), "repo", or a combo like "active,repo"
 	} `toml:"sort"`
 }
 

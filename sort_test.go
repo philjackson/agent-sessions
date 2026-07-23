@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func TestSortUngroupedFloatsLive(t *testing.T) {
 	sortSessions(s, nil)
 	// b-live floats to the top; the rest follow by activity, newest first.
 	want := []string{"b-live", "c-new", "a-new", "b-old", "a-old"}
-	if got := order(s); !equalStrings(got, want) {
+	if got := order(s); !slices.Equal(got, want) {
 		t.Errorf("ungrouped order = %v, want %v", got, want)
 	}
 }
@@ -45,7 +46,7 @@ func TestSortGroupsByRepo(t *testing.T) {
 	// inside), then repos by recency: C (newest) before A. Worktrees of one
 	// repo stay adjacent.
 	want := []string{"b-live", "b-old", "c-new", "a-new", "a-old"}
-	if got := order(s); !equalStrings(got, want) {
+	if got := order(s); !slices.Equal(got, want) {
 		t.Errorf("grouped order = %v, want %v", got, want)
 	}
 }
@@ -67,7 +68,7 @@ func TestSortRepoBuriesActive(t *testing.T) {
 	// Plain repo grouping keeps X's block whole, so its finished sessions push
 	// Y's live session to the very bottom — the behaviour we want to escape.
 	want := []string{"x-live", "x-done1", "x-done2", "y-live"}
-	if got := order(s); !equalStrings(got, want) {
+	if got := order(s); !slices.Equal(got, want) {
 		t.Errorf("repo order = %v, want %v", got, want)
 	}
 }
@@ -78,7 +79,7 @@ func TestSortActiveThenRepo(t *testing.T) {
 	// active,repo surfaces every live session first (clustered by repo), so
 	// y-live rises above X's finished sessions, which sink to the bottom.
 	want := []string{"x-live", "y-live", "x-done1", "x-done2"}
-	if got := order(s); !equalStrings(got, want) {
+	if got := order(s); !slices.Equal(got, want) {
 		t.Errorf("active,repo order = %v, want %v", got, want)
 	}
 }
@@ -86,13 +87,13 @@ func TestSortActiveThenRepo(t *testing.T) {
 func TestParseSortDims(t *testing.T) {
 	cases := map[string][]sortDim{
 		"":                nil,
-		"activity":        nil,
+		"active":          {dimActive},
 		"repo":            {dimRepo},
 		"active,repo":     {dimActive, dimRepo},
 		" active , repo ": {dimActive, dimRepo},
 		"repo,active":     {dimRepo, dimActive},
 		"active,active":   {dimActive}, // duplicates collapse
-		"live":            {dimActive}, // alias
+		"nonsense":        nil,         // unknown tokens are ignored
 	}
 	for in, want := range cases {
 		got := parseSortDims(in)
@@ -107,16 +108,4 @@ func TestParseSortDims(t *testing.T) {
 			}
 		}
 	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
