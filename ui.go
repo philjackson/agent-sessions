@@ -122,9 +122,10 @@ type model struct {
 	ci            map[string]ciEntry
 	ciPending     map[string]time.Time // slug@branch (or cwd@branch) in flight
 	all           []Session            // every session, unfiltered
-	sessions      []Session            // what the index shows: all, limited by query/project
+	sessions      []Session            // what the index shows: all, limited by query/project/branch
 	query         string
 	project       string                  // limit the index to this project cwd; "" is no limit
+	branch        string                  // limit the index to this branch; "" is no limit
 	input         textinput.Model         // line editor backing the search and text prompts
 	searching     bool                    // the search prompt is open and capturing keys
 	unread        map[string]bool         // session IDs that finished a turn unseen
@@ -135,6 +136,7 @@ type model struct {
 	helpOffset    int      // scroll position within the help screen
 	deleting      *Session // awaiting y/n confirmation to delete
 	picker        pickerState
+	menu          menuState
 	prompt        promptState
 	cursor        int
 	offset        int
@@ -243,6 +245,72 @@ func fuzzyMatch(query, s string) bool {
 		}
 	}
 	return qi == len(qr)
+}
+
+// menuState is a prefix-key menu: after its trigger key the top bar lists
+// what each follow-up key does; a bound key runs its action, and Esc (or
+// any unbound key) cancels. It is the generic way to group related keys
+// behind one, like f for the filters.
+type menuState struct {
+	active  bool
+	title   string
+	entries []menuEntry
+}
+
+type menuEntry struct {
+	key   string
+	label string
+	run   func(model) (tea.Model, tea.Cmd)
+}
+
+// menuView is the top-bar listing of an open prefix menu.
+func (m model) menuView() string {
+	parts := make([]string, 0, len(m.menu.entries))
+	for _, e := range m.menu.entries {
+		parts = append(parts, e.key+":"+e.label)
+	}
+	return m.menu.title + ": " + strings.Join(parts, "  ") + "  (Esc:Cancel)"
+}
+
+// handleMenuKey dispatches the follow-up key of an open prefix menu:
+// a matched entry runs its action, Esc or any unbound key cancels.
+func (m model) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	for _, e := range m.menu.entries {
+		if e.key == msg.String() {
+			m.menu = menuState{}
+			return e.run(m)
+		}
+	}
+	m.menu = menuState{}
+	return m, nil
+}
+
+// filterMenu opens the prefix menu behind f: each entry opens the picker
+// for one way of narrowing the index.
+func (m *model) filterMenu() {
+	m.menu = menuState{active: true, title: "Filter by", entries: []menuEntry{
+		{"p", "Project", func(m model) (tea.Model, tea.Cmd) {
+			m.openPicker("Filter by project", m.projectList(), displayPath,
+				func(m model, choice string) (tea.Model, tea.Cmd) {
+					m.project = choice
+					m.applyFilter()
+					return m, nil
+				})
+			return m, nil
+		}},
+		{"b", "Branch", func(m model) (tea.Model, tea.Cmd) {
+			m.openPicker("Filter by branch", m.branchList(), nil,
+				func(m model, choice string) (tea.Model, tea.Cmd) {
+					m.branch = choice
+					m.applyFilter()
+					return m, nil
+				})
+			return m, nil
+		}},
+	}}
 }
 
 // promptState is the one-line text prompt shown while a command containing
@@ -403,6 +471,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.menu.active {
+			return m.handleMenuKey(msg)
+		}
 		if m.picker.active {
 			return m.handlePickerKey(msg)
 		}
@@ -438,16 +509,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input = newLineInput()
 			m.applyFilter()
 		case "f":
-			m.openPicker("Filter by project", m.projectList(), displayPath,
-				func(m model, choice string) (tea.Model, tea.Cmd) {
-					m.project = choice
-					m.applyFilter()
-					return m, nil
-				})
+			m.filterMenu()
 		case "esc":
-			if m.query != "" || m.project != "" {
-				m.query = ""
-				m.project = ""
+			if m.query != "" || m.project != "" || m.branch != "" {
+				m.query, m.project, m.branch = "", "", ""
 				m.applyFilter()
 			}
 		case "j", "down":
@@ -556,6 +621,23 @@ func (m model) projectList() []string {
 		if s.CWD != "" && !seen[s.CWD] {
 			seen[s.CWD] = true
 			out = append(out, s.CWD)
+		}
+	}
+	return out
+}
+
+// branchList returns every known branch, most recently used first. When the
+// index is limited to a project, only that project's branches are offered.
+func (m model) branchList() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range m.all { // sorted newest first
+		if m.project != "" && s.CWD != m.project {
+			continue
+		}
+		if s.Branch != "" && !seen[s.Branch] {
+			seen[s.Branch] = true
+			out = append(out, s.Branch)
 		}
 	}
 	return out
@@ -687,10 +769,13 @@ func (m *model) applyFilter() {
 		selectedID = m.sessions[m.cursor].ID
 	}
 	m.sessions = m.all
-	if q := strings.ToLower(m.query); q != "" || m.project != "" {
+	if q := strings.ToLower(m.query); q != "" || m.project != "" || m.branch != "" {
 		m.sessions = nil
 		for _, s := range m.all {
 			if m.project != "" && s.CWD != m.project {
+				continue
+			}
+			if m.branch != "" && s.Branch != m.branch {
 				continue
 			}
 			if q != "" && !s.matches(q) {
@@ -722,6 +807,9 @@ func (m *model) applyFilter() {
 	}
 	if m.project != "" {
 		parts = append(parts, "project "+displayPath(m.project))
+	}
+	if m.branch != "" {
+		parts = append(parts, "branch "+m.branch)
 	}
 	m.status = strings.Join(parts, ", ")
 }
@@ -865,8 +953,11 @@ func (m model) View() string {
 	}
 
 	help := "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  r:Refresh  ?:Help"
-	if m.query != "" || m.project != "" {
+	if m.query != "" || m.project != "" || m.branch != "" {
 		help = "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  Esc:Clear filter  r:Refresh  ?:Help"
+	}
+	if m.menu.active {
+		help = m.menuView()
 	}
 	var b strings.Builder
 	b.WriteString(m.styles.bar.Render(pad(help, m.width)))
@@ -950,7 +1041,7 @@ func (m model) helpView() string {
 		"    ctrl+d / ctrl+u    half page down / up",
 		"    g / G              first / last session",
 		"    /                  search; Enter keeps the filter, Esc clears it",
-		"    f                  filter the list to one project (opens the picker)",
+		"    f                  filter menu: p by project, b by branch (pickers)",
 		"    d                  delete session (transcript + sidecar files; asks y/n)",
 		"    r                  refresh now",
 		"    ?                  this help",
@@ -961,6 +1052,10 @@ func (m model) helpView() string {
 		"    arrows, ctrl+j/k   move",
 		"    Enter              pick the highlighted item",
 		"    Esc                cancel",
+		"",
+		"  Prefix menus (e.g. f)",
+		"    follow-up key      run the action shown in the top bar",
+		"    Esc or other key   cancel the menu",
 		"",
 	}
 	if m.ciToken != "" {
