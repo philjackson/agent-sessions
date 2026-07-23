@@ -140,42 +140,40 @@ const (
 	tailScanBytes = 64 * 1024
 )
 
-// currentBranch reads the branch a working directory is on straight from
-// .git/HEAD, without spawning git. Returns "" when cwd isn't a git repo
-// (or no longer exists) and "HEAD" when detached.
-func currentBranch(cwd string) string {
+// gitInfo is what Load caches per cwd: the branch a working directory is on and
+// whether it's a linked worktree, both learned from a single stat of .git.
+type gitInfo struct {
+	branch   string
+	worktree bool
+}
+
+// gitState reads, in a single stat of cwd/.git, what Load needs about a working
+// directory. branch reads straight from .git/HEAD without spawning git: "" when
+// cwd isn't a git repo (or no longer exists), "HEAD" when detached. worktree is
+// true once .git is a pointer file, even if the branch can't be resolved.
+func gitState(cwd string) gitInfo {
 	gitPath := filepath.Join(cwd, ".git")
 	fi, err := os.Stat(gitPath)
 	if err != nil {
-		return ""
+		return gitInfo{}
 	}
 	dir := gitPath
+	worktree := false
 	if !fi.IsDir() { // a worktree: .git is a file pointing at the real dir
+		worktree = true
 		dir = worktreeGitDir(cwd, gitPath)
 		if dir == "" {
-			return ""
+			return gitInfo{worktree: true}
 		}
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "HEAD"))
 	if err != nil {
-		return ""
+		return gitInfo{worktree: worktree}
 	}
 	if ref, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "ref: refs/heads/"); ok {
-		return ref
+		return gitInfo{branch: ref, worktree: worktree}
 	}
-	return "HEAD" // detached
-}
-
-// isWorktree reports whether cwd is a git worktree (not the main repository).
-func isWorktree(cwd string) bool {
-	if cwd == "" {
-		return false
-	}
-	fi, err := os.Stat(filepath.Join(cwd, ".git"))
-	if err != nil {
-		return false
-	}
-	return !fi.IsDir()
+	return gitInfo{branch: "HEAD", worktree: worktree} // detached
 }
 
 // claudeDir returns the path of a directory under ~/.claude.
@@ -213,7 +211,7 @@ func (ld *loader) Load() ([]Session, error) {
 
 	var sessions []Session
 	fresh := make(map[string]Session, len(ld.cache))
-	branches := map[string]string{} // live branch per cwd, this pass
+	gitByCWD := map[string]gitInfo{} // branch + worktree per cwd, this pass
 	for _, pd := range projectDirs {
 		if !pd.IsDir() {
 			continue
@@ -246,16 +244,16 @@ func (ld *loader) Load() ([]Session, error) {
 			// The transcript's branch is only as fresh as the session's
 			// last activity; prefer what the directory is on right now.
 			if s.CWD != "" {
-				b, ok := branches[s.CWD]
+				g, ok := gitByCWD[s.CWD]
 				if !ok {
-					b = currentBranch(s.CWD)
-					branches[s.CWD] = b
+					g = gitState(s.CWD)
+					gitByCWD[s.CWD] = g
 				}
-				if b != "" {
-					s.Branch = b
+				if g.branch != "" {
+					s.Branch = g.branch
 				}
+				s.Worktree = g.worktree
 			}
-			s.Worktree = isWorktree(s.CWD)
 			sessions = append(sessions, s)
 		}
 	}
