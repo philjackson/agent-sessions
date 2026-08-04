@@ -121,6 +121,7 @@ type model struct {
 	previewRecent int         // max recent sessions to always preview (row mode)
 	previewWithin time.Duration
 	commands      map[string]string // key name -> command template
+	inputEditor   string            // editor for {text-input}; "" uses the in-app prompt
 	ciToken       string            // "" disables the CI column
 	ciSlugs       map[string]string // cwd -> CircleCI project slug ("" = none)
 	ci            map[string]ciEntry
@@ -170,6 +171,7 @@ func newModel(cfg Config) model {
 		loader:        newLoader(),
 		styles:        newStyles(cfg),
 		commands:      cfg.Commands,
+		inputEditor:   cfg.textInputEditor(),
 		tmuxGlyph:     cfg.Tmux.Glyph,
 		worktreeGlyph: cfg.Worktree.Glyph,
 		glyphs:        glyphs,
@@ -436,6 +438,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin++
 		return m, spinnerCmd()
 
+	case editorInputMsg:
+		if msg.err != nil {
+			m.notice = "editor: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.text == "" {
+			// The editor quit without saving anything: cancel the command,
+			// the way Esc does at the in-app prompt.
+			return m, nil
+		}
+		return m.continueCommand(strings.ReplaceAll(msg.tmpl, msg.token, shellQuote(msg.text)), msg.vars)
+
 	case execDoneMsg:
 		if msg.err != nil {
 			m.notice = fmt.Sprintf("command: %s — output in %s",
@@ -611,6 +625,9 @@ func (m model) continueCommand(tmpl string, vars map[string]string) (tea.Model, 
 		label := match[1]
 		if label == "" {
 			label = "Input"
+		}
+		if m.inputEditor != "" {
+			return m, editorInputCmd(m.inputEditor, label, tmpl, match[0], vars)
 		}
 		m.prompt = promptState{active: true, label: label, token: match[0], tmpl: tmpl, vars: vars}
 		m.input = newLineInput()

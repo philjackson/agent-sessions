@@ -85,6 +85,20 @@ glyph = "wt"
 # ones the default Enter command can jump to. Set to "" to hide it.
 glyph = "⊟"
 
+[input]
+# Where a command's {text-input} placeholder gets its text. "app" (the
+# default) opens the one-line prompt in the status bar. "editor" hands the
+# terminal to your editor on an empty scratch file instead, which is the
+# nicer way to write a long, multi-line opening prompt; saving an empty
+# file cancels the command. A command that types text into a pane with
+# `tmux send-keys` needs care to accept a multi-line value — see the c
+# binding below for the pattern.
+mode = "app"
+# Editor command for mode = "editor"; the scratch file's path is appended.
+# Unset (or ""), $VISUAL is used, then $EDITOR, then vi.
+#   editor = "nvim"
+editor = ""
+
 [commands]
 # Shell commands bound to keys, run on the selected session. Keys are
 # Bubble Tea key names: single characters ("o", "D"), "enter", or combos
@@ -127,8 +141,12 @@ fi
 
 # New claude in a fresh tmux window: pick a project, type the first
 # prompt. As with enter, the window starts an interactive shell and the
-# claude command is typed into it.
+# claude command is typed into it. The prompt itself rides in the window's
+# environment (-e, tmux 3.0+) rather than in the typed command, so it
+# arrives verbatim however it is written: newlines (see [input] mode =
+# "editor"), quotes and history-expanding ! all survive, which they don't
+# when interpolated into the line send-keys types.
 c = '''
-p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker})
-tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter
+p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker} -e AS_PROMPT={text-input:Prompt})
+tmux send-keys -t "$p" 'claude "$AS_PROMPT"' Enter
 '''

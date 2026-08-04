@@ -190,7 +190,7 @@ survive word-splitting.
 | `{pane}` | the tmux pane hosting the session's `claude` process |
 | `{ci-build-url}` | the latest CircleCI build's page (needs `[circleci]`) |
 | `{project-picker}` | interactive: the project chosen from a selection screen |
-| `{text-input}` | interactive: a line of text typed into the status bar |
+| `{text-input}` | interactive: a line of text typed into the status bar (or written in `$EDITOR`, see below) |
 
 `{pid}` and `{pane}` only apply to live sessions, and `{pane}` further
 requires the process to sit inside a tmux pane — commands using them show a
@@ -231,6 +231,45 @@ o = "cd {cwd} && $EDITOR ."
 t = "less +G {file}"
 n = "cd {project-picker} && claude"
 ```
+
+### Prompt input in `$EDITOR`
+
+By default `{text-input}` is typed into the one-line prompt in the status
+bar. `[input] mode = "editor"` hands the terminal to your editor on an
+empty scratch file instead — the nicer way to write a long, multi-line
+opening prompt — and uses what you save as the value:
+
+```toml
+[input]
+mode = "editor"   # "app" (default) or "editor"
+editor = "nvim"   # optional; else $VISUAL, then $EDITOR, then vi
+```
+
+The scratch file is named after the placeholder's label (`{text-input:Prompt}`
+gives `agent-sessions-prompt-*.md`), so the editor's status line says what's
+being asked for, and it's removed once read. Quitting without saving anything
+— an empty file — cancels the command, as `Esc` does at the in-app prompt.
+
+A multi-line value survives shell quoting fine, but a command that *types*
+it into a pane with `tmux send-keys` needs one adjustment: every newline in
+the typed line is an `Enter`, so the prompt has to travel out-of-band. Pass
+it in the new pane's environment (`-e`, tmux 3.0+) and reference it in the
+typed command, as the shipped `c` binding does:
+
+```toml
+c = '''
+p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker} -e AS_PROMPT={text-input:Prompt})
+tmux send-keys -t "$p" 'claude "$AS_PROMPT"' Enter
+'''
+```
+
+Only `claude "$AS_PROMPT"` is typed, so the prompt reaches claude exactly as
+written — newlines, quotes, backslashes and a history-expanding `!` included.
+Interpolating the value into the typed line instead (`"claude {text-input}"`)
+breaks on all four: the interactive shell receiving the keystrokes expands
+what it is given, and `!` is enough to corrupt a single-line prompt. The
+`new-claude` and `linear-claude` helpers use the same `-e` pattern for the
+prompts they build.
 
 ### Command log
 
@@ -274,8 +313,8 @@ prompt, and start `claude` with it in a fresh tmux window:
 ```toml
 [commands]
 c = '''
-p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker})
-tmux send-keys -t "$p" "claude {text-input:Prompt}" Enter
+p=$(tmux new-window -P -F "#{pane_id}" -c {project-picker} -e AS_PROMPT={text-input:Prompt})
+tmux send-keys -t "$p" 'claude "$AS_PROMPT"' Enter
 '''
 ```
 
@@ -289,9 +328,11 @@ applies. The default `enter` uses the same pattern for its dead-session
 branch. Use `split-window` instead of `new-window` for a pane in the
 current window.
 
-Quoting subtlety: the expanded `{text-input:...}` value is single-quote
-escaped, and the double-quote wrapper hands it intact to the window's
-shell — a prompt containing a literal `"` is the one thing it can't carry.
+Note also what is *not* typed: the prompt goes into the new pane's
+environment with `-e`, and only `claude "$AS_PROMPT"` is sent as keystrokes.
+That's what lets a prompt hold newlines, quotes, backslashes or a `!`
+without the receiving interactive shell mangling it — see
+[Prompt input in `$EDITOR`](#prompt-input-in-editor).
 
 ## Tip: a tmux key that jumps to agent-sessions
 

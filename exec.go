@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,63 @@ func commandLogPath() string {
 func execCmd(tmpl string, vars map[string]string) tea.Cmd {
 	return tea.Exec(&loggedCommand{line: expandCommand(tmpl, vars)},
 		func(err error) tea.Msg { return execDoneMsg{err} })
+}
+
+// editorInputMsg carries text collected in the user's editor back to the
+// command whose {text-input} placeholder was waiting for it.
+type editorInputMsg struct {
+	tmpl  string
+	token string            // the exact {text-input...} placeholder being filled
+	vars  map[string]string // expansion vars captured at keypress
+	text  string
+	err   error
+}
+
+// editorInputCmd collects a {text-input} value in the user's editor: it opens
+// an empty scratch file named after the placeholder's label, hands the
+// terminal over, and reports back whatever was saved. Output isn't logged —
+// a full-screen editor's escape sequences are noise in the command log.
+func editorInputCmd(editor, label, tmpl, token string, vars map[string]string) tea.Cmd {
+	f, err := os.CreateTemp("", inputFileSlug(label)+"-*.md")
+	if err != nil {
+		return func() tea.Msg { return editorInputMsg{err: err} }
+	}
+	path := f.Name()
+	f.Close()
+	// Via sh, so a configured editor can carry arguments of its own.
+	cmd := exec.Command("sh", "-c", editor+" "+shellQuote(path))
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		defer os.Remove(path)
+		if err != nil {
+			return editorInputMsg{err: err}
+		}
+		data, err := os.ReadFile(path)
+		return editorInputMsg{
+			tmpl:  tmpl,
+			token: token,
+			vars:  vars,
+			text:  strings.TrimSpace(string(data)),
+			err:   err,
+		}
+	})
+}
+
+// inputFileSlug turns a {text-input} label into a scratch-file name, so the
+// editor's status line says what is being asked for.
+func inputFileSlug(label string) string {
+	slug := strings.Trim(strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r - 'A' + 'a'
+		}
+		return '-'
+	}, label), "-")
+	if slug == "" {
+		slug = "input"
+	}
+	return "agent-sessions-" + slug
 }
 
 // loggedCommand is a tea.ExecCommand that gives `sh -c line` the real

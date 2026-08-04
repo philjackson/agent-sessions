@@ -44,6 +44,9 @@ esac
 [ -s "$exec_file" ] && . "$exec_file" || true
 
 # Start the window as an interactive shell (rc files, asdf, direnv all
-# apply) and type the claude command into it.
-win=$(tmux new-window -P -F '#{pane_id}' -c "$PWD")
-tmux send-keys -t "$win" "claude $(printf '%q' "$prompt")" Enter
+# apply) and type the claude command into it. The prompt travels in the
+# pane's environment (-e) instead of in the typed line, so it arrives
+# verbatim: multi-line prompts, quotes and a history-expanding ! all
+# survive being handed to an interactive shell.
+win=$(tmux new-window -P -F '#{pane_id}' -c "$PWD" -e AS_PROMPT="$prompt")
+tmux send-keys -t "$win" 'claude "$AS_PROMPT"' Enter

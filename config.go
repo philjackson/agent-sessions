@@ -60,6 +60,29 @@ type Config struct {
 	Tmux struct {
 		Glyph string `toml:"glyph"` // marker on tmux-attachable sessions; "" hides it
 	} `toml:"tmux"`
+	Input struct {
+		Mode   string `toml:"mode"`   // "app" (the in-app line editor) or "editor"
+		Editor string `toml:"editor"` // editor command; "" uses $VISUAL/$EDITOR
+	} `toml:"input"`
+}
+
+// inputModeEditor is the [input] mode that collects {text-input} text in the
+// user's editor instead of the in-app prompt.
+const inputModeEditor = "editor"
+
+// textInputEditor returns the editor command to collect {text-input} text
+// with, or "" when the in-app prompt should be used (the default). In editor
+// mode an unset [input] editor falls back to $VISUAL, then $EDITOR, then vi.
+func (c Config) textInputEditor() string {
+	if c.Input.Mode != inputModeEditor {
+		return ""
+	}
+	for _, e := range []string{c.Input.Editor, os.Getenv("VISUAL"), os.Getenv("EDITOR")} {
+		if strings.TrimSpace(e) != "" {
+			return e
+		}
+	}
+	return "vi"
 }
 
 // ciToken returns the configured CircleCI token, falling back to the
