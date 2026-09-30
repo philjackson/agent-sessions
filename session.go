@@ -34,6 +34,7 @@ var registryStates = map[string]SessionState{
 
 // Session is one Claude Code session transcript found on this machine.
 type Session struct {
+	Archived bool // stored in the searchable archive
 	ID       string
 	File     string
 	CWD      string
@@ -93,6 +94,9 @@ func displayPath(path string) string {
 func (s Session) Delete() error {
 	if err := os.Remove(s.File); err != nil {
 		return err
+	}
+	if s.Archived {
+		return os.RemoveAll(filepath.Dir(s.File))
 	}
 	return os.RemoveAll(strings.TrimSuffix(s.File, ".jsonl"))
 }
@@ -213,7 +217,7 @@ func (ld *loader) Load() ([]Session, error) {
 		return nil, err
 	}
 	projectDirs, err := os.ReadDir(root)
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 
@@ -273,6 +277,11 @@ func (ld *loader) Load() ([]Session, error) {
 	// only breaks ties among them. markLive runs first so Live() is set while
 	// sorting.
 	markLive(sessions)
+	archived, err := loadArchive()
+	if err != nil {
+		return nil, err
+	}
+	sessions = append(sessions, archived...)
 	sort.Slice(sessions, func(i, j int) bool {
 		if la, lb := sessions[i].Live(), sessions[j].Live(); la != lb {
 			return la

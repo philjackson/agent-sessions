@@ -111,46 +111,50 @@ const (
 )
 
 type model struct {
-	loader        *loader
-	styles        styles
-	tmuxGlyph     string // marker for tmux-attachable sessions; "" hides it
-	glyphs        map[marker]string
-	colGlyph      int         // display width reserved for the status glyph
-	showWords     bool        // show the state word next to the glyph
-	previewMode   previewMode // how to show each session's last message
-	previewRecent int         // max recent sessions to always preview (row mode)
-	previewWithin time.Duration
-	commands      map[string]string // key name -> command template
-	inputEditor   string            // editor for {text-input}; "" uses the in-app prompt
-	ciToken       string            // "" disables the CI column
-	ciSlugs       map[string]string // cwd -> CircleCI project slug ("" = none)
-	ci            map[string]ciEntry
-	ciPending     map[string]time.Time // slug@branch (or cwd@branch) in flight
-	all           []Session            // every session, unfiltered
-	sessions      []Session            // what the index shows: all, limited by query/project/branch
-	query         string
-	project       string                  // limit the index to this project cwd; "" is no limit
-	branch        string                  // limit the index to this branch; "" is no limit
-	input         textinput.Model         // line editor backing the search and text prompts
-	searching     bool                    // the search prompt is open and capturing keys
-	unread        map[string]bool         // session IDs that finished a turn unseen
-	seen          map[string]SessionState // last observed live state, for transitions
-	spin          int                     // running-spinner frame index
-	spinning      bool                    // a spinner tick is scheduled
-	showHelp      bool
-	helpOffset    int      // scroll position within the help screen
-	deleting      *Session // awaiting y/n confirmation to delete
-	picker        pickerState
-	menu          menuState
-	prompt        promptState
-	cursor        int
-	offset        int
-	width         int
-	height        int
-	loading       bool   // a Load is in flight; don't start another
-	status        string // shown instead of status until the next keypress
-	notice        string // shown instead of status until the next keypress
-	worktreeGlyph string // marker for worktree projects; "" hides it
+	loader           *loader
+	styles           styles
+	tmuxGlyph        string // marker for tmux-attachable sessions; "" hides it
+	glyphs           map[marker]string
+	colGlyph         int         // display width reserved for the status glyph
+	showWords        bool        // show the state word next to the glyph
+	previewMode      previewMode // how to show each session's last message
+	previewRecent    int         // max recent sessions to always preview (row mode)
+	previewWithin    time.Duration
+	commands         map[string]string // key name -> command template
+	inputEditor      string            // editor for {text-input}; "" uses the in-app prompt
+	ciToken          string            // "" disables the CI column
+	ciSlugs          map[string]string // cwd -> CircleCI project slug ("" = none)
+	ci               map[string]ciEntry
+	ciPending        map[string]time.Time // slug@branch (or cwd@branch) in flight
+	all              []Session            // every session, unfiltered
+	sessions         []Session            // what the index shows: all, limited by query/project/branch
+	query            string
+	project          string                  // limit the index to this project cwd; "" is no limit
+	branch           string                  // limit the index to this branch; "" is no limit
+	input            textinput.Model         // line editor backing the search and text prompts
+	searching        bool                    // the search prompt is open and capturing keys
+	unread           map[string]bool         // session IDs that finished a turn unseen
+	seen             map[string]SessionState // last observed live state, for transitions
+	spin             int                     // running-spinner frame index
+	spinning         bool                    // a spinner tick is scheduled
+	showHelp         bool
+	helpOffset       int // scroll position within the help screen
+	archiveView      bool
+	archiving        *archivePlan
+	archiveBusy      bool
+	archiveOperation string
+	deleting         *Session // awaiting y/n confirmation to delete
+	picker           pickerState
+	menu             menuState
+	prompt           promptState
+	cursor           int
+	offset           int
+	width            int
+	height           int
+	loading          bool   // a Load is in flight; don't start another
+	status           string // shown instead of status until the next keypress
+	notice           string // shown instead of status until the next keypress
+	worktreeGlyph    string // marker for worktree projects; "" hides it
 }
 
 func newModel(cfg Config) model {
@@ -414,6 +418,39 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampOffset()
 		return m, tea.Batch(m.ciFetchCmd(), m.ensureSpinner())
 
+	case unarchiveDoneMsg:
+		m.archiveBusy = false
+		m.archiveOperation = ""
+		if msg.err != nil {
+			m.notice = "unarchive: " + msg.err.Error()
+		} else {
+			m.notice = "Session unarchived. Press A to view active sessions."
+		}
+		if !m.loading {
+			m.loading = true
+			return m, m.loadCmd
+		}
+		return m, nil
+	case archiveInspectedMsg:
+		m.archiveBusy = false
+		if msg.err != nil {
+			m.notice = "archive: " + msg.err.Error()
+			return m, nil
+		}
+		m.archiving = &msg.plan
+		return m, nil
+	case archiveDoneMsg:
+		m.archiveBusy = false
+		if msg.err != nil {
+			m.notice = "archive: " + msg.err.Error()
+		} else {
+			m.notice = "Session archived."
+		}
+		if !m.loading {
+			m.loading = true
+			return m, m.loadCmd
+		}
+		return m, nil
 	case ciMsg:
 		for cwd, slug := range msg.slugs {
 			m.ciSlugs[cwd] = slug
@@ -463,6 +500,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		m.notice = ""
+		if m.archiveBusy {
+			return m, nil
+		}
+		if m.archiving != nil {
+			p := *m.archiving
+			m.archiving = nil
+			if msg.String() == "y" {
+				m.archiveBusy = true
+				return m, func() tea.Msg { return archiveDoneMsg{p.Archive(p.Pending != "")} }
+			}
+			return m, nil
+		}
 		if m.deleting != nil {
 			s := *m.deleting
 			m.deleting = nil
@@ -505,6 +554,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clampOffset()
 			return m, cmd
 		}
+		if msg.String() == "enter" && m.cursor < len(m.sessions) && m.sessions[m.cursor].Archived {
+			return m.runCommand("less {file}")
+		}
 		if tmpl := m.commands[msg.String()]; tmpl != "" {
 			return m.runCommand(tmpl)
 		}
@@ -513,6 +565,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "?":
 			m.showHelp = true
+		case "A":
+			m.archiveView = !m.archiveView
+			m.cursor, m.offset = 0, 0
+			m.applyFilter()
+		case "u":
+			if m.cursor >= len(m.sessions) {
+				break
+			}
+			s := m.sessions[m.cursor]
+			if !m.archiveView || !s.Archived {
+				m.notice = "Press A to open the archive, then u to unarchive a session."
+				break
+			}
+			m.archiveBusy = true
+			m.archiveOperation = "Unarchiving session…"
+			return m, func() tea.Msg { return unarchiveDoneMsg{s.Unarchive()} }
+		case "a":
+			if m.archiveBusy || m.cursor >= len(m.sessions) {
+				break
+			}
+			s := m.sessions[m.cursor]
+			if s.Archived {
+				m.notice = "Session is already archived."
+				break
+			}
+			m.archiveBusy = true
+			return m, func() tea.Msg { p, err := inspectArchive(s); return archiveInspectedMsg{p, err} }
 		case "d":
 			if m.cursor >= len(m.sessions) {
 				break
@@ -641,6 +720,9 @@ func (m model) projectList() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, s := range m.all { // sorted newest first
+		if s.Archived != m.archiveView {
+			continue
+		}
 		if s.CWD != "" && !seen[s.CWD] {
 			seen[s.CWD] = true
 			out = append(out, s.CWD)
@@ -655,6 +737,9 @@ func (m model) branchList() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, s := range m.all { // sorted newest first
+		if s.Archived != m.archiveView {
+			continue
+		}
 		if m.project != "" && s.CWD != m.project {
 			continue
 		}
@@ -791,21 +876,22 @@ func (m *model) applyFilter() {
 	if m.cursor < len(m.sessions) {
 		selectedID = m.sessions[m.cursor].ID
 	}
-	m.sessions = m.all
-	if q := strings.ToLower(m.query); q != "" || m.project != "" || m.branch != "" {
-		m.sessions = nil
-		for _, s := range m.all {
-			if m.project != "" && s.CWD != m.project {
-				continue
-			}
-			if m.branch != "" && s.Branch != m.branch {
-				continue
-			}
-			if q != "" && !s.matches(q) {
-				continue
-			}
-			m.sessions = append(m.sessions, s)
+	q := strings.ToLower(m.query)
+	m.sessions = nil
+	for _, s := range m.all {
+		if s.Archived != m.archiveView {
+			continue
 		}
+		if m.project != "" && s.CWD != m.project {
+			continue
+		}
+		if m.branch != "" && s.Branch != m.branch {
+			continue
+		}
+		if q != "" && !s.matches(q) {
+			continue
+		}
+		m.sessions = append(m.sessions, s)
 	}
 	m.cursor = min(m.cursor, m.lastRow())
 	counts := map[SessionState]int{}
@@ -822,6 +908,9 @@ func (m *model) applyFilter() {
 		noun = "session"
 	}
 	parts := []string{fmt.Sprintf("%d %s", len(m.sessions), noun)}
+	if m.archiveView {
+		parts = append(parts, "archive")
+	}
 	for _, st := range sessionStates {
 		parts = append(parts, fmt.Sprintf("%d %s", counts[st], st))
 	}
@@ -975,9 +1064,12 @@ func (m model) View() string {
 		return m.pickerView()
 	}
 
-	help := "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  r:Refresh  ?:Help"
+	help := "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  a:Archive  A:Archive view  r:Refresh  ?:Help"
 	if m.query != "" || m.project != "" || m.branch != "" {
-		help = "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  Esc:Clear filter  r:Refresh  ?:Help"
+		help = "q:Quit  j/k:Move  Enter:Go  /:Search  f:Filter  A:Archive view  Esc:Clear filter  r:Refresh  ?:Help"
+	}
+	if m.archiveView {
+		help = "q:Quit  j/k:Move  Enter:Read  /:Search  f:Filter  u:Unarchive  A:Active view  d:Delete  ?:Help"
 	}
 	if m.menu.active {
 		help = m.menuView()
@@ -1022,6 +1114,27 @@ func (m model) View() string {
 	}
 	if m.prompt.active {
 		status = m.prompt.label + ": " + m.inputView(m.prompt.label+": ")
+	}
+	if m.archiving != nil {
+		p := m.archiving
+		action := "Archive session"
+		if p.Worktree != "" {
+			action += " and delete worktree"
+		}
+		if p.Pending != "" {
+			if p.Worktree != "" {
+				action = "Discard pending files, delete worktree and archive? " + p.Pending
+			} else {
+				action = "Archive and keep shared checkout? " + p.Pending
+			}
+		}
+		status = action + " (y/n)"
+	}
+	if m.archiveBusy {
+		status = "Archiving: checking or saving session…"
+		if m.archiveOperation != "" {
+			status = m.archiveOperation
+		}
 	}
 	if m.deleting != nil {
 		status = fmt.Sprintf("Delete %q? (y/n)", m.deleting.Subject())
@@ -1069,6 +1182,9 @@ func (m model) helpView() string {
 		"    g / G              first / last session",
 		"    /                  search; Enter keeps the filter, Esc clears it",
 		"    f                  filter menu: p by project, b by branch (pickers)",
+		"    a                  archive session; checks branch and removes worktree (asks y/n)",
+		"    A                  toggle active/archive view; / searches the current view",
+		"    u                  unarchive selected session (archive view)",
 		"    d                  delete session (transcript + sidecar files; asks y/n)",
 		"    r                  refresh now",
 		"    ?                  this help",
@@ -1288,3 +1404,11 @@ func trunc(s string, w int) string {
 func truncPad(s string, w int) string {
 	return pad(trunc(s, w), w)
 }
+
+type archiveInspectedMsg struct {
+	plan archivePlan
+	err  error
+}
+type archiveDoneMsg struct{ err error }
+
+type unarchiveDoneMsg struct{ err error }

@@ -72,6 +72,9 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | `Esc` | clear the search and project/branch filters |
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
+| `a` | archive the session and remove its linked worktree after confirmation |
+| `A` | switch between active sessions and the searchable archive |
+| `u` | unarchive the selected session (archive view) |
 | `d` | delete the session after a y/n confirmation |
 | `r` | refresh |
 | `?` | help: list all keys and configured commands |
@@ -81,6 +84,31 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 `~/.claude/projects`, which only means `claude --resume` can no longer
 offer that session — nothing a running Claude Code depends on. Sessions
 with a live claude process are refused.
+
+Archived sessions live in `$XDG_DATA_HOME/agent-sessions/archive` (usually
+`~/.local/share/agent-sessions/archive`), grouped by Claude project and session
+id. The archive preserves the transcript, sidecar files, and session metadata,
+including the branch at archive time. Archived sessions leave the active list
+and Claude's resume list. Press `A` to browse them; `/`, project and branch
+filters work in this view too. `Enter` opens an archived transcript in `less`,
+and `d` permanently deletes an archived session after confirmation. Press `u`
+to restore a session to Claude’s projects directory and the active list. This
+restores the transcript and sidecar files without overwriting an existing
+session. It removes the archive copy only after restoring successfully. Deleted
+worktrees and discarded checkout files are not recreated; recreate the retained
+branch’s worktree before resuming a session whose working directory is missing.
+
+`a` first checks the checkout for modified, staged, untracked and ignored files,
+and for commits not merged into the default branch (`origin/HEAD`, falling back
+to local `main` or `master`). If no default branch is available, it reports that
+the merge status is unknown. The confirmation asks whether pending files should
+be discarded and the linked worktree removed. `n` or `Esc` cancels archiving.
+Clean worktrees are also removed after confirmation. Git branch refs and their
+commits are retained; this operation removes the checkout, not the branch.
+Main/shared checkouts are kept, including any pending files. Live sessions and
+worktrees used by another live Claude session cannot be archived. Detached worktrees must be assigned a branch before archiving so their commits
+remain reachable. The checkout is checked again after confirmation; changes to
+the branch, commit or pending-work categories require retrying.
 
 `/` matches case-insensitively against each session's title, project path,
 branch, and session id. `f` opens the filter menu: the top bar lists the
