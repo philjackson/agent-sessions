@@ -407,3 +407,125 @@ func TestUnarchiveKeyOnlyInArchiveView(t *testing.T) {
 		t.Fatal("unarchive did not finish and refresh")
 	}
 }
+
+func TestArchiveConfirmationOnlyForPendingWork(t *testing.T) {
+	for _, pending := range []string{"", "uncommitted/untracked/ignored files", "1 unmerged commits (branch retained)", "merge status unknown (no default branch)"} {
+		t.Run(pending, func(t *testing.T) {
+			m := model{archiveBusy: true}
+			updated, cmd := m.Update(archiveInspectedMsg{plan: archivePlan{Pending: pending}})
+			got := updated.(model)
+			if pending == "" {
+				if cmd == nil || !got.archiveBusy || got.archiving != nil {
+					t.Fatal("clean session should archive without confirmation")
+				}
+			} else if cmd != nil || got.archiveBusy || got.archiving == nil {
+				t.Fatal("pending work should wait for confirmation")
+			}
+		})
+	}
+}
+
+func TestCleanArchiveKeyArchivesImmediately(t *testing.T) {
+	s, _, wt := archiveFixture(t)
+	m := model{sessions: []Session{s}}
+	updated, inspect := m.Update(key("a"))
+	if inspect == nil {
+		t.Fatal("archive inspection did not start")
+	}
+	updated, archive := updated.(model).Update(inspect())
+	if archive == nil || updated.(model).archiving != nil {
+		t.Fatal("clean archive asked for confirmation")
+	}
+	if result := archive().(archiveDoneMsg); result.err != nil {
+		t.Fatal(result.err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("clean worktree not removed: %v", err)
+	}
+	sessions, err := loadArchive()
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("session not archived: %v %v", sessions, err)
+	}
+}
+
+func TestArchiveUnbornBranch(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		t.Run(strconv.FormatBool(dirty), func(t *testing.T) {
+			s, _, _ := archiveFixture(t)
+			empty := filepath.Join(t.TempDir(), "empty")
+			if err := os.Mkdir(empty, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gitOutput(empty, "init", "-b", "main"); err != nil {
+				t.Fatal(err)
+			}
+			s.CWD, s.Branch = empty, "main"
+			if dirty {
+				if err := os.WriteFile(filepath.Join(empty, "pending"), []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p, err := inspectArchive(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Revision != "" || (p.Pending != "") != dirty {
+				t.Fatalf("unexpected unborn plan: %+v", p)
+			}
+			if err := p.Archive(dirty); err != nil {
+				t.Fatal(err)
+			}
+			sessions, err := loadArchive()
+			if err != nil || len(sessions) != 1 {
+				t.Fatalf("not archived: %v %v", sessions, err)
+			}
+			if dirty {
+				if data, err := os.ReadFile(filepath.Join(empty, "pending")); err != nil || string(data) != "keep" {
+					t.Fatal("shared checkout changed", err)
+				}
+			}
+		})
+	}
+}
+
+func TestArchiveUnbornBranchFirstCommitRequiresRetry(t *testing.T) {
+	s, repo, _ := archiveFixture(t)
+	if _, err := gitOutput(repo, "checkout", "--orphan", "new-branch"); err != nil {
+		t.Fatal(err)
+	}
+	s.CWD, s.Branch = repo, "new-branch"
+	p, err := inspectArchive(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitOutput(repo, "commit", "-m", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Archive(true); err == nil || !strings.Contains(err.Error(), "checkout changed") {
+		t.Fatalf("new commit not detected: %v", err)
+	}
+	if _, err := os.Stat(s.File); err != nil {
+		t.Fatal("original lost", err)
+	}
+}
+
+func TestArchiveBrokenExistingHEADStillFails(t *testing.T) {
+	s, _, wt := archiveFixture(t)
+	gitdir, err := gitOutput(wt, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	common, err := gitOutput(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitdir, "HEAD"), []byte("ref: refs/heads/broken\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(common, "refs", "heads", "broken"), []byte(strings.Repeat("a", 40)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inspectArchive(s); err == nil {
+		t.Fatal("broken ref treated as unborn branch")
+	}
+}

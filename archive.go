@@ -100,9 +100,16 @@ func inspectArchive(s Session) (archivePlan, error) {
 		return p, errors.New("create a branch before archiving a detached worktree so its commits remain reachable")
 	}
 	p.Session.Branch = branch
-	p.Revision, err = gitOutput(top, "rev-parse", "HEAD")
+	p.Revision, err = gitOutput(top, "rev-parse", "--verify", "HEAD^{commit}")
 	if err != nil {
-		return p, err
+		// An unborn branch has a symbolic HEAD but no branch ref yet.
+		// Only that case is safe to treat as having no commits; a broken
+		// existing ref or detached HEAD must still fail inspection.
+		_, refErr := gitOutput(top, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+		var exitErr *exec.ExitError
+		if branch == "HEAD" || !errors.As(refErr, &exitErr) || exitErr.ExitCode() != 1 {
+			return p, err
+		}
 	}
 	dirty, err := gitOutput(top, "status", "--porcelain", "--untracked-files=normal", "--ignored=matching")
 	if err != nil {
@@ -111,6 +118,10 @@ func inspectArchive(s Session) (archivePlan, error) {
 	var pending []string
 	if dirty != "" {
 		pending = append(pending, "uncommitted/untracked/ignored files")
+	}
+	if p.Revision == "" {
+		p.Pending = strings.Join(pending, "; ")
+		return p, nil // no commits exist on an unborn branch to compare
 	}
 	// Compare with the default branch, rather than only the tracking branch:
 	// pushed feature commits may still not have been merged.

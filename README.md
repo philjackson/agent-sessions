@@ -72,7 +72,7 @@ and macOS (the macOS path hasn't been smoke-tested yet).
 | `Esc` | clear the search and project/branch filters |
 | `g` / `G` | first / last session |
 | `ctrl+d` / `ctrl+u` | half page down / up |
-| `a` | archive the session and remove its linked worktree after confirmation |
+| `a` | archive the session and remove its linked worktree; confirm only pending work |
 | `A` | switch between active sessions and the searchable archive |
 | `u` | unarchive the selected session (archive view) |
 | `d` | delete the session after a y/n confirmation |
@@ -101,13 +101,15 @@ branch’s worktree before resuming a session whose working directory is missing
 `a` first checks the checkout for modified, staged, untracked and ignored files,
 and for commits not merged into the default branch (`origin/HEAD`, falling back
 to local `main` or `master`). If no default branch is available, it reports that
-the merge status is unknown. The confirmation asks whether pending files should
-be discarded and the linked worktree removed. `n` or `Esc` cancels archiving.
-Clean worktrees are also removed after confirmation. Git branch refs and their
-commits are retained; this operation removes the checkout, not the branch.
+the merge status is unknown. Confirmation is only needed when pending files,
+unmerged commits or an unknown merge status need review. It asks whether pending
+files should be discarded and the linked worktree removed. `n` or `Esc` cancels archiving.
+Clean sessions archive immediately, removing any linked worktree. Git branch
+refs and their commits are retained; this operation removes the checkout, not the branch.
 Main/shared checkouts are kept, including any pending files. Live sessions and
-worktrees used by another live Claude session cannot be archived. Detached worktrees must be assigned a branch before archiving so their commits
-remain reachable. The checkout is checked again after confirmation; changes to
+worktrees used by another live Claude session cannot be archived. Detached
+worktrees must be assigned a branch before archiving so their commits remain
+reachable. The checkout is checked again before archiving; changes to
 the branch, commit or pending-work categories require retrying.
 
 `/` matches case-insensitively against each session's title, project path,

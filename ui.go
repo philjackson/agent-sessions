@@ -437,6 +437,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "archive: " + msg.err.Error()
 			return m, nil
 		}
+		if msg.plan.Pending == "" {
+			m.archiveBusy = true
+			return m, func() tea.Msg { return archiveDoneMsg{msg.plan.Archive(false)} }
+		}
 		m.archiving = &msg.plan
 		return m, nil
 	case archiveDoneMsg:
@@ -1182,7 +1186,7 @@ func (m model) helpView() string {
 		"    g / G              first / last session",
 		"    /                  search; Enter keeps the filter, Esc clears it",
 		"    f                  filter menu: p by project, b by branch (pickers)",
-		"    a                  archive session; checks branch and removes worktree (asks y/n)",
+		"    a                  archive session; asks y/n only when pending work needs review",
 		"    A                  toggle active/archive view; / searches the current view",
 		"    u                  unarchive selected session (archive view)",
 		"    d                  delete session (transcript + sidecar files; asks y/n)",
