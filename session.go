@@ -112,7 +112,8 @@ func (s Session) matches(q string) bool {
 	return false
 }
 
-// Subject is the line shown in the index: AI title, else first prompt, else slug.
+// Subject is the line shown in the index: custom title, else AI title, else
+// first prompt, else slug.
 func (s Session) Subject() string {
 	if s.Title != "" {
 		return s.Title
@@ -128,11 +129,14 @@ type transcriptLine struct {
 	Type      string `json:"type"`
 	Timestamp string `json:"timestamp"`
 	AITitle   string `json:"aiTitle"`
-	CWD       string `json:"cwd"`
-	GitBranch string `json:"gitBranch"`
-	Slug      string `json:"slug"`
-	IsMeta    bool   `json:"isMeta"`
-	Message   *struct {
+	// CustomTitle is set by /rename and by Claude Desktop, which names its
+	// sessions this way instead of writing an aiTitle.
+	CustomTitle string `json:"customTitle"`
+	CWD         string `json:"cwd"`
+	GitBranch   string `json:"gitBranch"`
+	Slug        string `json:"slug"`
+	IsMeta      bool   `json:"isMeta"`
+	Message     *struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
@@ -304,9 +308,15 @@ func parseTranscript(s *Session) {
 	}
 	defer f.Close()
 
-	var firstPrompt string
-	scan(io.LimitReader(f, headScanBytes), func(l transcriptLine) {
+	var firstPrompt, customTitle string
+	absorbTitled := func(l transcriptLine) {
 		absorb(s, l)
+		if l.CustomTitle != "" {
+			customTitle = l.CustomTitle
+		}
+	}
+	scan(io.LimitReader(f, headScanBytes), func(l transcriptLine) {
+		absorbTitled(l)
 		if firstPrompt == "" {
 			firstPrompt = userPrompt(l)
 		}
@@ -319,11 +329,14 @@ func parseTranscript(s *Session) {
 		if _, err := f.Seek(off, io.SeekStart); err == nil {
 			r := bufio.NewReader(f)
 			r.ReadString('\n') // drop partial first line
-			scan(r, func(l transcriptLine) { absorb(s, l) })
+			scan(r, absorbTitled)
 		}
 	}
 
-	if s.Title == "" {
+	switch {
+	case customTitle != "":
+		s.Title = customTitle
+	case s.Title == "":
 		s.Title = firstPrompt
 	}
 }
@@ -370,26 +383,35 @@ func assistantText(l transcriptLine) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// contentText returns the first text found in a message content value,
-// which is either a plain string or an array of typed blocks.
+// contentText returns the first text found in a message content value.
 func contentText(raw json.RawMessage) string {
+	if texts := contentTexts(raw); len(texts) > 0 {
+		return texts[0]
+	}
+	return ""
+}
+
+// contentTexts returns every text in a message content value, which is
+// either a plain string or an array of typed blocks.
+func contentTexts(raw json.RawMessage) []string {
 	var text string
 	if err := json.Unmarshal(raw, &text); err == nil {
-		return text
+		return []string{text}
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
+		return nil
 	}
+	var texts []string
 	for _, b := range blocks {
 		if b.Type == "text" {
-			return b.Text
+			texts = append(texts, b.Text)
 		}
 	}
-	return ""
+	return texts
 }
 
 // scan parses JSONL lines from r, ignoring anything malformed or oversized.
@@ -410,13 +432,17 @@ func userPrompt(l transcriptLine) string {
 	if l.Type != "user" || l.IsMeta || l.Message == nil || l.Message.Role != "user" {
 		return ""
 	}
-	text := strings.TrimSpace(contentText(l.Message.Content))
-	// Skip slash-command wrappers, hook output, and injected reminders.
-	if text == "" || strings.HasPrefix(text, "<") {
-		return ""
+	// Skip slash-command wrappers, hook output, and injected reminders, which
+	// Claude Desktop puts in a block ahead of the typed prompt.
+	for _, text := range contentTexts(l.Message.Content) {
+		text = strings.TrimSpace(text)
+		if text == "" || strings.HasPrefix(text, "<") {
+			continue
+		}
+		text, _, _ = strings.Cut(text, "\n")
+		return text
 	}
-	text, _, _ = strings.Cut(text, "\n")
-	return text
+	return ""
 }
 
 // registrySession mirrors ~/.claude/sessions/<pid>.json, the per-process
