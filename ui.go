@@ -892,7 +892,7 @@ func (m *model) applyFilter() {
 		if m.branch != "" && s.Branch != m.branch {
 			continue
 		}
-		if q != "" && !s.matches(q) {
+		if q != "" && !s.matches(q, m.loader) {
 			continue
 		}
 		m.sessions = append(m.sessions, s)
@@ -1184,7 +1184,7 @@ func (m model) helpView() string {
 		"    j / k, arrows      move down / up",
 		"    ctrl+d / ctrl+u    half page down / up",
 		"    g / G              first / last session",
-		"    /                  search; Enter keeps the filter, Esc clears it",
+		"    /                  search titles and full transcript text; Enter keeps filter, Esc clears",
 		"    f                  filter menu: p by project, b by branch (pickers)",
 		"    a                  archive session; asks y/n only when pending work needs review",
 		"    A                  toggle active/archive view; / searches the current view",

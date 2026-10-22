@@ -132,14 +132,15 @@ func (s Session) Delete() error {
 }
 
 // matches reports whether the lowercase query appears in any of the
-// session's searchable fields.
-func (s Session) matches(q string) bool {
+// session's searchable fields, falling back to the transcript's full text
+// (ld may be nil, skipping the content search).
+func (s Session) matches(q string, ld *loader) bool {
 	for _, f := range []string{s.Subject(), s.Project(), s.Branch, s.ID, s.CWD, s.Pane} {
 		if strings.Contains(strings.ToLower(f), q) {
 			return true
 		}
 	}
-	return false
+	return ld != nil && strings.Contains(ld.content(s), q)
 }
 
 // Subject is the line shown in the index: custom title, else AI title, else
@@ -233,14 +234,20 @@ func claudeDir(elem ...string) (string, error) {
 	return filepath.Join(append([]string{home, ".claude"}, elem...)...), nil
 }
 
-// loader loads sessions, caching parsed transcript metadata between calls so
-// the periodic refresh only re-parses files that actually changed.
+// loader loads sessions, caching parsed transcript metadata and full text
+// between calls so the periodic refresh only re-parses files that actually
+// changed and the search filter never rereads an unchanged transcript.
 type loader struct {
-	cache map[string]Session // by path; entries hold no live state
+	cache        map[string]Session       // by path; entries hold no live state
+	texts        map[string]cachedContent // by path; full lowercased text
+	contentBytes int                      // total size of the content cache
 }
 
 func newLoader() *loader {
-	return &loader{cache: map[string]Session{}}
+	return &loader{
+		cache: map[string]Session{},
+		texts: map[string]cachedContent{},
+	}
 }
 
 // Load scans ~/.claude/projects for session transcripts, newest first, with
@@ -327,6 +334,40 @@ func (ld *loader) Load() ([]Session, error) {
 		return sessions[i].Modified.After(sessions[j].Modified)
 	})
 	return sessions, nil
+}
+
+// content returns the transcript's full lowercased text for content
+// search, caching it by path and revalidating against size and mtime so a
+// file that changed since the last refresh is reread. Files past the cache
+// limit are read on every call.
+// ponytail: fixed cap, stale entries of deleted files linger until evicted;
+// LRU if transcript collections grow past it.
+const contentCacheLimit = 256 << 20
+
+type cachedContent struct {
+	text    string
+	modTime time.Time
+	size    int64
+}
+
+func (ld *loader) content(s Session) string {
+	if e, ok := ld.texts[s.File]; ok && e.size == s.Size && e.modTime.Equal(s.Modified) {
+		return e.text
+	}
+	data, err := os.ReadFile(s.File)
+	if err != nil {
+		return ""
+	}
+	e := cachedContent{modTime: s.Modified, size: s.Size, text: strings.ToLower(string(data))}
+	if old, ok := ld.texts[s.File]; ok {
+		ld.contentBytes -= len(old.text)
+		delete(ld.texts, s.File)
+	}
+	if ld.contentBytes+len(e.text) <= contentCacheLimit {
+		ld.texts[s.File] = e
+		ld.contentBytes += len(e.text)
+	}
+	return e.text
 }
 
 // parseTranscript fills metadata by scanning the head of the file (for the

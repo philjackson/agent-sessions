@@ -6,6 +6,30 @@ import (
 	"testing"
 )
 
+func TestSessionMatchesTranscriptContent(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(file, []byte(`{"type":"assistant","message":{"role":"assistant","content":"Fixed PR 75463 today"}}`+"\n"), 0600)
+	fi, _ := os.Stat(file)
+	s := Session{ID: "s", File: file, Size: fi.Size(), Modified: fi.ModTime(), Title: "Unrelated work"}
+
+	ld := newLoader()
+	if !s.matches("75463", ld) {
+		t.Fatal("query not found in content")
+	}
+	if !s.matches("pr 75463", ld) { // case-insensitive, uses cache
+		t.Fatal("case-insensitive content match failed")
+	}
+	if !s.matches("unrelated work", nil) { // metadata still matches, nil loader ok
+		t.Fatal("metadata match failed")
+	}
+	if s.matches("never-there", ld) {
+		t.Fatal("false positive")
+	}
+	if len(ld.texts) != 1 || ld.contentBytes == 0 {
+		t.Fatalf("content not cached: %d %d", len(ld.texts), ld.contentBytes)
+	}
+}
+
 func TestParseTranscriptDesktopTitles(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "s.jsonl")
 	os.WriteFile(file, []byte(
