@@ -79,6 +79,36 @@ func (s Session) Project() string {
 	return displayPath(s.CWD)
 }
 
+// ShortProject is Project with every directory between the first and the
+// last cut to its first letter, so the most telling parts survive a narrow
+// column.
+func (s Session) ShortProject() string {
+	return abbreviatePath(s.Project())
+}
+
+// abbreviatePath cuts each path component except the first and last to its
+// first rune (keeping a leading dot), e.g. ~/Projects/One/Two ->
+// ~/Projects/O/Two.
+func abbreviatePath(path string) string {
+	parts := strings.Split(path, "/")
+	first := true
+	for i, p := range parts[:len(parts)-1] {
+		if p == "~" || p == "" {
+			continue
+		}
+		if first {
+			first = false
+			continue
+		}
+		n := 1
+		if p[0] == '.' && len(p) > 1 {
+			n = 2
+		}
+		parts[i] = string([]rune(p)[:n])
+	}
+	return strings.Join(parts, "/")
+}
+
 // displayPath shortens a path under the user's home directory to ~.
 func displayPath(path string) string {
 	if home, _ := os.UserHomeDir(); home != "" {

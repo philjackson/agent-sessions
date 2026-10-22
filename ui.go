@@ -1297,7 +1297,7 @@ func (m model) renderRow(idx int, plain bool) string {
 		word,
 		m.tmuxCell(s),
 		s.When().Format("Jan 02 15:04"),
-		truncPad(s.Project(), colProject),
+		truncPad(s.ShortProject(), colProject),
 		m.worktreeCell(s, plain),
 		truncPad(s.Branch, colBranch),
 		truncPad(s.Pane, colPane),

@@ -27,3 +27,20 @@ func TestParseTranscriptDesktopTitles(t *testing.T) {
 		t.Fatalf("prompt after injected block not used, got %q", s.Title)
 	}
 }
+
+func TestAbbreviatePath(t *testing.T) {
+	for in, want := range map[string]string{
+		"~/Projects/One/Two": "~/Projects/O/Two",
+		"~":                  "~",
+		"~/Projects":         "~/Projects",
+		"~/Projects/One":     "~/Projects/One",
+		"/srv/app/web":       "/srv/a/web",
+		"~/.config/Claude/x": "~/.config/C/x",
+		"~/a/.hidden/Ünï/x":  "~/a/.h/Ü/x",
+		"?":                  "?",
+	} {
+		if got := abbreviatePath(in); got != want {
+			t.Errorf("abbreviatePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
