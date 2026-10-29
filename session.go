@@ -336,8 +336,8 @@ func (ld *loader) Load() ([]Session, error) {
 	return sessions, nil
 }
 
-// content returns the transcript's full lowercased text for content
-// search, caching it by path and revalidating against size and mtime so a
+// content returns the transcript's lowercased conversation text for
+// content search, caching it by path and revalidating against size and mtime so a
 // file that changed since the last refresh is reread. Files past the cache
 // limit are read on every call.
 // ponytail: fixed cap, stale entries of deleted files linger until evicted;
@@ -354,11 +354,13 @@ func (ld *loader) content(s Session) string {
 	if e, ok := ld.texts[s.File]; ok && e.size == s.Size && e.modTime.Equal(s.Modified) {
 		return e.text
 	}
-	data, err := os.ReadFile(s.File)
+	f, err := os.Open(s.File)
 	if err != nil {
 		return ""
 	}
-	e := cachedContent{modTime: s.Modified, size: s.Size, text: strings.ToLower(string(data))}
+	text := conversationText(f)
+	f.Close()
+	e := cachedContent{modTime: s.Modified, size: s.Size, text: text}
 	if old, ok := ld.texts[s.File]; ok {
 		ld.contentBytes -= len(old.text)
 		delete(ld.texts, s.File)
@@ -368,6 +370,45 @@ func (ld *loader) content(s Session) string {
 		ld.contentBytes += len(e.text)
 	}
 	return e.text
+}
+
+// conversationText returns the lowercased text of the user and assistant
+// messages in a transcript. Attachments, tool listings, tool results and
+// injected system reminders are left out: they repeat across every session
+// (every transcript lists the same MCP tools), so searching them matches
+// everything and narrows nothing.
+func conversationText(r io.Reader) string {
+	var b strings.Builder
+	scan(r, func(l transcriptLine) {
+		if (l.Type != "user" && l.Type != "assistant") || l.IsMeta || l.Message == nil {
+			return
+		}
+		for _, text := range contentTexts(l.Message.Content) {
+			text = stripSystemReminders(text)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			b.WriteString(strings.ToLower(text))
+			b.WriteByte('\n')
+		}
+	})
+	return b.String()
+}
+
+// stripSystemReminders removes <system-reminder>…</system-reminder> spans.
+func stripSystemReminders(text string) string {
+	const open, close = "<system-reminder>", "</system-reminder>"
+	for {
+		i := strings.Index(text, open)
+		if i < 0 {
+			return text
+		}
+		j := strings.Index(text[i:], close)
+		if j < 0 {
+			return text[:i]
+		}
+		text = text[:i] + text[i+j+len(close):]
+	}
 }
 
 // parseTranscript fills metadata by scanning the head of the file (for the

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,6 +28,20 @@ func TestSessionMatchesTranscriptContent(t *testing.T) {
 	}
 	if len(ld.texts) != 1 || ld.contentBytes == 0 {
 		t.Fatalf("content not cached: %d %d", len(ld.texts), ld.contentBytes)
+	}
+}
+
+func TestConversationTextSkipsNoise(t *testing.T) {
+	text := conversationText(strings.NewReader(
+		`{"type":"attachment","attachment":{"type":"deferred_tools_delta","content":"mcp__CircleCI__get_job"}}` + "\n" +
+			`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>CircleCI tools</system-reminder>Fix the Login bug"}]}}` + "\n" +
+			`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"circle output"}]}}` + "\n" +
+			`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done"}]}}` + "\n"))
+	if strings.Contains(text, "circle") {
+		t.Fatalf("noise leaked into search text: %q", text)
+	}
+	if !strings.Contains(text, "fix the login bug") || !strings.Contains(text, "done") {
+		t.Fatalf("conversation text missing: %q", text)
 	}
 }
 
