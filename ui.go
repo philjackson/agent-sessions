@@ -368,6 +368,14 @@ func (m model) loadCmd() tea.Msg {
 	return sessionsLoadedMsg{sessions: sessions, err: err}
 }
 
+// warmContentCmd parses transcript text for search in the background.
+func (m model) warmContentCmd(sessions []Session) tea.Cmd {
+	return func() tea.Msg {
+		m.loader.warmContent(sessions)
+		return nil
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return tickMsg{} })
 }
@@ -416,7 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.all = msg.sessions
 		m.applyFilter()
 		m.clampOffset()
-		return m, tea.Batch(m.ciFetchCmd(), m.ensureSpinner())
+		return m, tea.Batch(m.ciFetchCmd(), m.ensureSpinner(), m.warmContentCmd(msg.sessions))
 
 	case unarchiveDoneMsg:
 		m.archiveBusy = false

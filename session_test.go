@@ -31,6 +31,22 @@ func TestSessionMatchesTranscriptContent(t *testing.T) {
 	}
 }
 
+func TestWarmContentConcurrentWithSearch(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "s.jsonl")
+	os.WriteFile(file, []byte(`{"type":"user","message":{"role":"user","content":"warm me"}}`+"\n"), 0600)
+	fi, _ := os.Stat(file)
+	s := Session{ID: "s", File: file, Size: fi.Size(), Modified: fi.ModTime()}
+
+	ld := newLoader()
+	done := make(chan struct{})
+	go func() { ld.warmContent([]Session{s}); close(done) }()
+	s.matches("warm", ld) // races the warm pass; -race checks the locking
+	<-done
+	if len(ld.texts) != 1 || !s.matches("warm me", ld) {
+		t.Fatal("warm pass did not cache content")
+	}
+}
+
 func TestConversationTextSkipsNoise(t *testing.T) {
 	text := conversationText(strings.NewReader(
 		`{"type":"attachment","attachment":{"type":"deferred_tools_delta","content":"mcp__CircleCI__get_job"}}` + "\n" +

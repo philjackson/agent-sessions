@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -238,9 +240,14 @@ func claudeDir(elem ...string) (string, error) {
 // between calls so the periodic refresh only re-parses files that actually
 // changed and the search filter never rereads an unchanged transcript.
 type loader struct {
-	cache        map[string]Session       // by path; entries hold no live state
-	texts        map[string]cachedContent // by path; full lowercased text
+	cache map[string]Session // by path; entries hold no live state
+
+	// The content cache is shared by the search filter (UI goroutine) and
+	// background warming, so it has its own lock.
+	mu           sync.Mutex
+	texts        map[string]cachedContent // by path; lowercased conversation text
 	contentBytes int                      // total size of the content cache
+	warming      atomic.Bool              // a warm pass is in progress
 }
 
 func newLoader() *loader {
@@ -351,7 +358,10 @@ type cachedContent struct {
 }
 
 func (ld *loader) content(s Session) string {
-	if e, ok := ld.texts[s.File]; ok && e.size == s.Size && e.modTime.Equal(s.Modified) {
+	ld.mu.Lock()
+	e, ok := ld.texts[s.File]
+	ld.mu.Unlock()
+	if ok && e.size == s.Size && e.modTime.Equal(s.Modified) {
 		return e.text
 	}
 	f, err := os.Open(s.File)
@@ -360,7 +370,9 @@ func (ld *loader) content(s Session) string {
 	}
 	text := conversationText(f)
 	f.Close()
-	e := cachedContent{modTime: s.Modified, size: s.Size, text: text}
+	e = cachedContent{modTime: s.Modified, size: s.Size, text: text}
+	ld.mu.Lock()
+	defer ld.mu.Unlock()
 	if old, ok := ld.texts[s.File]; ok {
 		ld.contentBytes -= len(old.text)
 		delete(ld.texts, s.File)
@@ -370,6 +382,19 @@ func (ld *loader) content(s Session) string {
 		ld.contentBytes += len(e.text)
 	}
 	return e.text
+}
+
+// warmContent fills the content cache for sessions so the first search
+// doesn't stall on parsing every transcript. Unchanged files are a cheap
+// cache hit; overlapping calls return immediately.
+func (ld *loader) warmContent(sessions []Session) {
+	if !ld.warming.CompareAndSwap(false, true) {
+		return
+	}
+	defer ld.warming.Store(false)
+	for _, s := range sessions {
+		ld.content(s)
+	}
 }
 
 // conversationText returns the lowercased text of the user and assistant
